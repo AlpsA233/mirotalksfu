@@ -266,6 +266,9 @@ module.exports = class Room {
     }
 
     async close() {
+        Promise.resolve(this.onManagedRoomClosed?.()).catch((error) =>
+            log.warn('Managed recording room cleanup failed', { room_id: this.id, error: error.message })
+        );
         this.closeAudioLevelObserver();
         this.closeActiveSpeakerObserver();
         this.rtmpStreaming.closeAll();
@@ -542,7 +545,7 @@ module.exports = class Room {
         return null;
     }
 
-    removePeer(socket_id) {
+    removePeer(socket_id, { keepOpen = false } = {}) {
         if (!this.peers.has(socket_id)) return;
 
         const peer = this.getPeer(socket_id);
@@ -551,7 +554,7 @@ module.exports = class Room {
 
         this.delPeer(peer);
 
-        if (this.getPeersCount() === 0) {
+        if (this.getPeersCount() === 0 && !keepOpen) {
             this.close();
         }
     }
@@ -785,7 +788,7 @@ module.exports = class Room {
     // PRODUCE
     // ####################################################
 
-    async produce(socket_id, producerTransportId, rtpParameters, kind, type) {
+    async produce(socket_id, producerTransportId, rtpParameters, kind, type, paused = false) {
         if (!socket_id || !producerTransportId || !rtpParameters || !kind || !type) {
             throw new Error('Missing required parameters for producing media');
         }
@@ -803,7 +806,7 @@ module.exports = class Room {
 
         let peerProducer;
         try {
-            peerProducer = await peer.createProducer(producerTransportId, rtpParameters, kind, type);
+            peerProducer = await peer.createProducer(producerTransportId, rtpParameters, kind, type, paused);
         } catch (error) {
             log.error(`Error creating producer for peer ${peer.peer_name} with socket ID ${socket_id}`, {
                 producerTransportId,
@@ -861,6 +864,9 @@ module.exports = class Room {
         const peer = this.getPeer(socket_id);
 
         try {
+            Promise.resolve(this.onManagedProducerClosed?.(producer_id)).catch((error) =>
+                log.warn('Managed recording producer cleanup failed', { producer_id, error: error.message })
+            );
             peer.closeProducer(producer_id);
         } catch (error) {
             log.error(`Error closing producer for peer ${socket_id}`, error);

@@ -18,6 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# Persistent mounts can replace these paths. The node user must be able to
+# create the SQLite WAL files and per-meeting media directories.
+RUN mkdir -p /data/recordings /data/state && chown -R node:node /data
+
 # Install dependencies (cache npm)
 COPY package*.json ./
 RUN --mount=type=cache,target=/root/.npm \

@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>会议录制管理</title>
+        <style>
+            :root {
+                color-scheme: dark;
+                font-family: system-ui, sans-serif;
+                background: #10131a;
+                color: #edf1f7;
+            }
+            body {
+                margin: 0;
+            }
+            main {
+                max-width: 1200px;
+                margin: auto;
+                padding: 28px;
+            }
+            header,
+            .row {
+                display: flex;
+                align-items: center;
+                gap: 14px;
+                flex-wrap: wrap;
+            }
+            header {
+                justify-content: space-between;
+            }
+            button,
+            input {
+                border: 1px solid #3a465b;
+                border-radius: 7px;
+                padding: 9px 12px;
+                background: #192232;
+                color: inherit;
+            }
+            button {
+                cursor: pointer;
+            }
+            button.primary {
+                background: #3478f6;
+                border-color: #3478f6;
+            }
+            .panel {
+                margin-top: 20px;
+                padding: 18px;
+                background: #171d28;
+                border: 1px solid #293448;
+                border-radius: 10px;
+            }
+            .hidden {
+                display: none !important;
+            }
+            .meetings {
+                display: grid;
+                gap: 9px;
+                margin-top: 14px;
+            }
+            .meeting {
+                text-align: left;
+                padding: 13px;
+                width: 100%;
+            }
+            .meeting.active {
+                outline: 2px solid #4b8cff;
+            }
+            .muted {
+                color: #aab6ca;
+                font-size: 0.9rem;
+            }
+            .error {
+                color: #ff9292;
+            }
+            video {
+                width: 100%;
+                max-height: 67vh;
+                background: #000;
+                border-radius: 8px;
+            }
+            .tracks {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-top: 12px;
+            }
+            .tracks button {
+                font-size: 0.88rem;
+            }
+            code {
+                word-break: break-all;
+            }
+            label {
+                display: flex;
+                align-items: center;
+                gap: 7px;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <header>
+                <div>
+                    <h1>会议录制</h1>
+                    <div class="muted">独立轨可在合成视频完成前直接回放</div>
+                </div>
+                <button id="logout" class="hidden">退出登录</button>
+            </header>
+            <section id="login" class="panel">
+                <h2>管理员登录</h2>
+                <div class="row">
+                    <input id="username" placeholder="用户名" value="admin" /><input
+                        id="password"
+                        type="password"
+                        placeholder="密码"
+                    /><button class="primary" id="loginButton">登录</button>
+                </div>
+                <p id="loginError" class="error"></p>
+            </section>
+            <section id="console" class="hidden">
+                <div class="panel row">
+                    <label><input type="checkbox" id="recordingEnabled" /> 新建会议默认录制</label
+                    ><span class="muted">变更不会影响已开始的会议。</span>
+                </div>
+                <div class="panel">
+                    <h2>录制会议</h2>
+                    <div id="meetings" class="meetings"></div>
+                </div>
+                <section id="detail" class="panel hidden">
+                    <div class="row">
+                        <h2 id="meetingTitle"></h2>
+                        <span id="meetingState" class="muted"></span>
+                    </div>
+                    <video id="player" controls playsinline></video>
+                    <p id="playerHint" class="muted">选择一条独立轨开始回放；音频只播放当前所选参与者。</p>
+                    <div id="tracks" class="tracks"></div>
+                    <div class="row" style="margin-top: 16px">
+                        <select id="primaryTrack">
+                            <option value="">自动网格 / 当前共享优先</option></select
+                        ><button id="compose">生成或重新生成合成视频</button
+                        ><button id="playComposition" class="hidden">播放合成视频</button
+                        ><button id="share">创建公开回放链接</button>
+                    </div>
+                    <p id="shareResult" class="muted"></p>
+                </section>
+            </section>
+        </main>
+        <script>
+            (() => {
+                let csrf = null,
+                    current = null;
+                const $ = (id) => document.getElementById(id);
+                const request = async (url, options = {}) => {
+                    const headers = { ...(options.headers || {}) };
+                    if (options.body) headers['Content-Type'] = 'application/json';
+                    if (csrf && options.method && options.method !== 'GET') headers['X-CSRF-Token'] = csrf;
+                    const response = await fetch(url, { ...options, headers });
+                    if (!response.ok)
+                        throw new Error(
+                            (await response.json().catch(() => ({}))).error || `请求失败 (${response.status})`
+                        );
+                    return response.status === 204 ? null : response.json();
+                };
+                const when = (timestamp) => (timestamp ? new Date(timestamp).toLocaleString() : '—');
+                async function loadMeetings() {
+                    const { meetings } = await request('/api/admin/recordings');
+                    $('meetings').replaceChildren(
+                        ...meetings.map((meeting) => {
+                            const button = document.createElement('button');
+                            button.className = `meeting ${current?.id === meeting.id ? 'active' : ''}`;
+                            button.innerHTML = `<strong>${meeting.room_id}</strong><br><span class="muted">${when(meeting.started_at)} · ${meeting.state} · ${meeting.tracks.length} 条轨道</span>`;
+                            button.onclick = () => openMeeting(meeting.id);
+                            return button;
+                        })
+                    );
+                }
+                function assetUrl(assetId) {
+                    return `/api/admin/recordings/${encodeURIComponent(current.id)}/assets/${encodeURIComponent(assetId)}`;
+                }
+                function play(assetId, text) {
+                    $('player').src = assetUrl(assetId);
+                    $('playerHint').textContent = text;
+                    $('player')
+                        .play()
+                        .catch(() => {});
+                }
+                async function openMeeting(id) {
+                    current = await request(`/api/admin/recordings/${encodeURIComponent(id)}`);
+                    $('detail').classList.remove('hidden');
+                    $('meetingTitle').textContent = current.room_id;
+                    $('meetingState').textContent = current.state;
+                    $('tracks').replaceChildren(
+                        ...current.tracks.map((track) => {
+                            const button = document.createElement('button');
+                            button.textContent = `${track.peer_name} · ${track.media_type} · ${track.state}`;
+                            button.disabled = !track.playback_path;
+                            button.onclick = () =>
+                                play(
+                                    track.id,
+                                    `正在播放：${track.peer_name} 的 ${track.media_type}。音频仅限当前选中参与者。`
+                                );
+                            return button;
+                        })
+                    );
+                    $('primaryTrack').replaceChildren(
+                        new Option('自动网格 / 当前共享优先', ''),
+                        ...current.tracks
+                            .filter((t) => t.kind === 'video')
+                            .map((t) => new Option(`${t.peer_name} · ${t.media_type}`, t.id))
+                    );
+                    $('playComposition').classList.toggle('hidden', !current.composition_path);
+                    $('shareResult').textContent = '';
+                    await loadMeetings();
+                }
+                async function boot() {
+                    try {
+                        const session = await request('/api/admin/recording/session');
+                        csrf = session.csrfToken;
+                        $('login').classList.add('hidden');
+                        $('console').classList.remove('hidden');
+                        $('logout').classList.remove('hidden');
+                        $('recordingEnabled').checked = session.settings.enabled;
+                        await loadMeetings();
+                    } catch (_) {
+                        $('login').classList.remove('hidden');
+                    }
+                }
+                $('loginButton').onclick = async () => {
+                    try {
+                        const session = await request('/api/admin/recording/session', {
+                            method: 'POST',
+                            body: JSON.stringify({ username: $('username').value, password: $('password').value }),
+                        });
+                        csrf = session.csrfToken;
+                        await boot();
+                    } catch (error) {
+                        $('loginError').textContent = error.message;
+                    }
+                };
+                $('recordingEnabled').onchange = async () => {
+                    try {
+                        await request('/api/admin/recording/settings', {
+                            method: 'PATCH',
+                            body: JSON.stringify({ enabled: $('recordingEnabled').checked }),
+                        });
+                    } catch (error) {
+                        $('recordingEnabled').checked = !$('recordingEnabled').checked;
+                        alert(error.message);
+                    }
+                };
+                $('logout').onclick = async () => {
+                    await request('/api/admin/recording/session', { method: 'DELETE' });
+                    location.reload();
+                };
+                $('compose').onclick = async () => {
+                    try {
+                        $('compose').disabled = true;
+                        await request(`/api/admin/recordings/${encodeURIComponent(current.id)}/composition`, {
+                            method: 'POST',
+                            body: JSON.stringify({ primaryTrackId: $('primaryTrack').value || null }),
+                        });
+                        await openMeeting(current.id);
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        $('compose').disabled = false;
+                    }
+                };
+                $('playComposition').onclick = () => play('composition', '正在播放合成会议视频。');
+                $('share').onclick = async () => {
+                    try {
+                        const result = await request(`/api/admin/recordings/${encodeURIComponent(current.id)}/share`, {
+                            method: 'POST',
+                            body: '{}',
+                        });
+                        $('shareResult').innerHTML = `公开回放链接：<code>${result.url}</code>`;
+                    } catch (error) {
+                        alert(error.message);
+                    }
+                };
+                boot();
+            })();
+        </script>
+    </body>
+</html>

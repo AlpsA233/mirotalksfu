@@ -108,6 +108,8 @@ const Discord = require('./Discord');
 const Mattermost = require('./Mattermost');
 const restrictAccessByIP = require('./middleware/IpWhitelist');
 const { applyEmbedHeaders, embedAllowedOrigins, embedCsp } = require('./middleware/EmbedHeaders');
+const ManagedRecording = require('./ManagedRecording');
+const { createRecordingRouter } = require('./RecordingHttp');
 const packageJson = require('../../package.json');
 
 // Login attempts limit
@@ -526,6 +528,14 @@ const authHost = new Host(); // Authenticated IP by Login
 
 const roomList = new Map(); // All Rooms
 
+// Kept as one in-process service: metadata lives in SQLite and media is written
+// to the configured filesystem/NAS mount.  The callback is assigned after the
+// room lifecycle helpers are available.
+let managedRoomTerminator = null;
+const managedRecording = new ManagedRecording(config?.media?.managedRecording || {}, {
+    onFatal: async (room, reason) => managedRoomTerminator?.(room, reason),
+});
+
 const presenters = {}; // Collect presenters grp by roomId
 
 const streams = {}; // Collect all rtmp streams
@@ -644,6 +654,44 @@ function OIDCAuth(req, res, next) {
 }
 
 function startServer() {
+    const clearRecordingGrace = (room) => {
+        if (room.managedRecordingGraceTimer) clearTimeout(room.managedRecordingGraceTimer);
+        room.managedRecordingGraceTimer = null;
+    };
+
+    const finalizeManagedRoom = async (room, reason, { notify = false } = {}) => {
+        if (!room || room.managedRecordingFinalizing) return room?.managedRecordingFinalizing;
+        room.managedRecordingFinalizing = (async () => {
+            clearRecordingGrace(room);
+            if (notify) room.sendToAll('managedRecordingUnavailable', { message: reason });
+            await managedRecording.finishMeeting(room, reason);
+            for (const [peerId] of room.getPeers()) room.removePeer(peerId);
+            if (room.getPeersCount() === 0 && !room.router?.closed) await room.close();
+            roomList.delete(room.id);
+            delete presenters[room.id];
+        })();
+        return room.managedRecordingFinalizing;
+    };
+
+    const scheduleManagedRoomGrace = (room) => {
+        if (!managedRecording.hasActiveMeeting(room)) return false;
+        clearRecordingGrace(room);
+        const graceMs = config?.media?.managedRecording?.graceMs || 5 * 60 * 1000;
+        room.managedRecordingGraceTimer = setTimeout(() => {
+            finalizeManagedRoom(room, 'last_peer_left').catch((error) =>
+                log.error('Managed recording finalization failed', { room_id: room.id, error: error.message })
+            );
+        }, graceMs);
+        room.managedRecordingGraceTimer.unref?.();
+        return true;
+    };
+
+    managedRoomTerminator = (room, reason) => finalizeManagedRoom(room, reason, { notify: true });
+    managedRecording.on('status', (data) => {
+        const room = managedRecording.meetings.get(data.meetingId)?.room;
+        room?.sendToAll('managedRecordingStatus', data);
+    });
+
     // Start the app
     app.set('trust proxy', trustProxy); // Enables trust for proxy headers (e.g., X-Forwarded-For) based on the trustProxy setting
     app.use(helmet.noSniff()); // Enable content type sniffing prevention
@@ -667,6 +715,17 @@ function startServer() {
 
     // IP Whitelist check ...
     app.use(restrictAccessByIP);
+
+    // Keep the recording administration and public-share routes outside the
+    // regular room/OIDC routing. Public shares deliberately remain accessible
+    // by their unguessable, revocable URL.
+    app.use(
+        createRecordingRouter({
+            manager: managedRecording,
+            config: { hostUrl: host, admin: config?.media?.managedRecording?.admin },
+            viewsDir: path.join(__dirname, '../../public/views'),
+        })
+    );
 
     // Logs requests
     /*
@@ -1952,7 +2011,7 @@ function startServer() {
     });
 
     // request end meeting room endpoint
-    app.delete(restApi.basePath + '/meeting/:room', (req, res) => {
+    app.delete(restApi.basePath + '/meeting/:room', async (req, res) => {
         try {
             // Check if endpoint allowed
             if (restApi.allowed && !restApi.allowed.meetingEnd) {
@@ -1963,7 +2022,7 @@ function startServer() {
             }
             // check if user was authorized for the api call
             const { host, authorization } = req.headers;
-            const api = new ServerApi(host, authorization);
+            const api = new ServerApi(host, authorization, (roomObj, reason) => finalizeManagedRoom(roomObj, reason));
             if (!api.isAuthorized()) {
                 log.debug('MiroTalk end meeting - Unauthorized', {
                     header: req.headers,
@@ -1974,7 +2033,7 @@ function startServer() {
             // End the meeting
             const { room } = req.params;
             const { redirect } = req.body || {};
-            const result = api.endMeeting(roomList, room, redirect);
+            const result = await api.endMeeting(roomList, room, redirect);
             const status = result.success ? 200 : 404;
             res.status(status).json(result);
             // log.debug the output if all done
@@ -2264,6 +2323,16 @@ function startServer() {
 
     (async () => {
         try {
+            if (config?.media?.managedRecording?.enabled) {
+                try {
+                    await managedRecording.initialize();
+                    log.info('Managed recording service initialized');
+                } catch (error) {
+                    // Do not take an otherwise usable SFU down, but a meeting that
+                    // has recording enabled will be refused by prepareMeeting().
+                    log.error('Managed recording initialization failed', { error: error.message });
+                }
+            }
             await createWorkers();
             startServer();
         } catch (err) {
@@ -2383,6 +2452,8 @@ function startServer() {
                 try {
                     const worker = await getMediasoupWorker();
                     const room = await new Room(socket.room_id, worker, io).ready();
+                    room.onManagedProducerClosed = (producerId) => managedRecording.releaseProducer(room, producerId);
+                    room.onManagedRoomClosed = () => managedRecording.discardDisabledMeeting(room);
                     roomList.set(socket.room_id, room);
                     log.debug('Created room', { room_id: socket.room_id });
                     callback({ room_id: socket.room_id });
@@ -2523,6 +2594,9 @@ function startServer() {
             }
 
             room.addPeer(new Peer(socket.id, data));
+            // A return during the grace interval belongs to the same meeting
+            // and therefore keeps its session/timeline intact.
+            clearRecordingGrace(room);
 
             const activeRooms = getActiveRooms();
 
@@ -2656,7 +2730,15 @@ function startServer() {
                 notifyMainRoomBreakoutCountChanged(socket.room_id);
             }
 
+            let managedRecordingState;
+            try {
+                managedRecordingState = await managedRecording.prepareMeeting(room);
+            } catch (error) {
+                log.error('Managed recording prevents room admission', { room_id: room.id, error: error.message });
+                return cb({ error: 'Managed recording is unavailable' });
+            }
             const roomJson = room.toJson();
+            roomJson.managedRecording = managedRecordingState;
 
             // Issue a per-session, room-bound token authorizing this peer to upload
             // its own server recording chunks via the /recSync* endpoints.
@@ -2814,13 +2896,35 @@ function startServer() {
             peer.updatePeerInfo(data);
 
             try {
+                // Snapshot the administrator's default for this room before
+                // creating the Producer. When recording is mandatory the
+                // Producer starts paused; FFmpeg only needs its sockets/SDP
+                // ready, not a first media frame, before it is resumed.
+                const recordingState = await managedRecording.prepareMeeting(room);
+                const recordingRequired = recordingState.required;
                 const producer_id = await room.produce(
                     socket.id,
                     producerTransportId,
                     rtpParameters,
                     kind,
-                    appData.mediaType
+                    appData.mediaType,
+                    recordingRequired
                 );
+
+                if (recordingRequired) {
+                    const producer = peer.getProducer(producer_id);
+                    managedRecording.markProducerPending(room, peer, producer);
+                    try {
+                        await managedRecording.captureProducer(room, peer, producer, {
+                            kind,
+                            mediaType: appData.mediaType,
+                        });
+                    } catch (recordingError) {
+                        room.closeProducer(socket.id, producer_id);
+                        await managedRecording.failMeetingForRoom(room, recordingError.message);
+                        throw recordingError;
+                    }
+                }
 
                 log.debug('Produce', {
                     kind: kind,
@@ -3049,6 +3153,7 @@ function startServer() {
             const peerInfo = getPeerInfo(peer);
 
             try {
+                await managedRecording.setProducerUserPaused(room, producer_id, true);
                 await producer.pause();
 
                 log.debug('Producer paused', { producer_id, type, peerInfo });
@@ -3089,7 +3194,8 @@ function startServer() {
             const peerInfo = getPeerInfo(peer);
 
             try {
-                await producer.resume();
+                const recordingControlled = await managedRecording.setProducerUserPaused(room, producer_id, false);
+                if (!recordingControlled) await producer.resume();
 
                 log.debug('Producer resumed', { producer_id, type, peerInfo });
 
@@ -3262,8 +3368,14 @@ function startServer() {
                         password: 'KO',
                     };
                     if (data.password == room.getPassword()) {
-                        roomData.room = room.toJson();
-                        roomData.password = 'OK';
+                        try {
+                            roomData.room = room.toJson();
+                            roomData.room.managedRecording = await managedRecording.prepareMeeting(room);
+                            roomData.password = 'OK';
+                        } catch (error) {
+                            roomData.room = null;
+                            roomData.password = 'KO';
+                        }
                     }
                     room.sendTo(socket.id, 'roomPassword', roomData);
                     break;
@@ -4970,7 +5082,8 @@ function startServer() {
                     .catch((error) => log.error('Error tracking disconnect event:', error.message));
             }
 
-            room.removePeer(socket.id);
+            const keepRoomForRecording = managedRecording.hasActiveMeeting(room);
+            room.removePeer(socket.id, { keepOpen: keepRoomForRecording });
 
             room.broadCast(socket.id, 'removeMe', removeMeData(room, peer_name, isPresenter));
 
@@ -4998,7 +5111,7 @@ function startServer() {
                 });
             }
 
-            if (room.getPeersCount() === 0) {
+            if (room.getPeersCount() === 0 && !scheduleManagedRoomGrace(room)) {
                 //
                 stopRTMPActiveStreams(isPresenter, room);
 
@@ -5054,7 +5167,8 @@ function startServer() {
                     .catch((error) => log.error('Error tracking exitRoom event:', error.message));
             }
 
-            room.removePeer(socket.id);
+            const keepRoomForRecording = managedRecording.hasActiveMeeting(room);
+            room.removePeer(socket.id, { keepOpen: keepRoomForRecording });
 
             room.broadCast(socket.id, 'removeMe', removeMeData(room, peer_name, isPresenter));
 
@@ -5077,7 +5191,7 @@ function startServer() {
                 });
             }
 
-            if (room.getPeersCount() === 0) {
+            if (room.getPeersCount() === 0 && !scheduleManagedRoomGrace(room)) {
                 //
                 stopRTMPActiveStreams(isPresenter, room);
 
@@ -5732,6 +5846,11 @@ async function gracefulShutdown(signal) {
         server.close(() => {
             log.info('HTTP server closed');
         });
+
+        // Stop and persist server-side recording before mediasoup Workers are
+        // closed. This is intentionally ahead of peer removal, because that
+        // removal closes the Producer/PlainTransport underneath FFmpeg.
+        await managedRecording.shutdown();
 
         // 2. Close all active rooms and notify peers
         log.debug(`Closing ${roomList.size} active rooms...`);

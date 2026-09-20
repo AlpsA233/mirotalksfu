@@ -224,6 +224,27 @@ module.exports = {
             },
         },
 
+        /** Server-side, per-producer recording. The database path must remain on the host disk; storageDir may be a mounted NAS. */
+        managedRecording: {
+            enabled: process.env.MANAGED_RECORDING_ENABLED === 'true',
+            defaultEnabled: process.env.MANAGED_RECORDING_DEFAULT_ENABLED === 'true',
+            storageDir: process.env.MANAGED_RECORDING_STORAGE_DIR || '/data/recordings',
+            dbPath: process.env.MANAGED_RECORDING_DB_PATH || '/data/state/recordings.sqlite',
+            ffmpegPath: process.env.MANAGED_RECORDING_FFMPEG_PATH || RTMP_FFMPEG_PATH,
+            ffprobePath: process.env.MANAGED_RECORDING_FFPROBE_PATH || 'ffprobe',
+            rtpPortMin: parseInt(process.env.MANAGED_RECORDING_RTP_PORT_MIN, 10) || 42000,
+            rtpPortMax: parseInt(process.env.MANAGED_RECORDING_RTP_PORT_MAX, 10) || 42999,
+            recoveryMs: Math.max(parseInt(process.env.MANAGED_RECORDING_RECOVERY_SECONDS, 10) || 30, 1) * 1000,
+            recoveryIntervalMs:
+                Math.max(parseInt(process.env.MANAGED_RECORDING_RECOVERY_INTERVAL_SECONDS, 10) || 5, 1) * 1000,
+            shutdownTimeoutMs: Math.max(parseInt(process.env.MANAGED_RECORDING_SHUTDOWN_SECONDS, 10) || 10, 1) * 1000,
+            graceMs: Math.max(parseInt(process.env.MANAGED_RECORDING_GRACE_SECONDS, 10) || 300, 0) * 1000,
+            admin: {
+                username: process.env.MANAGED_RECORDING_ADMIN_USERNAME || 'admin',
+                password: process.env.MANAGED_RECORDING_ADMIN_PASSWORD || '',
+            },
+        },
+
         /**
          * RTMP Configuration
          * =================

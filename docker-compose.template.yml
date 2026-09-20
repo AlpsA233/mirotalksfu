@@ -19,6 +19,10 @@ services:
             - ./.env:/src/.env:ro
             # Mandatory volume if `RECORDING_ENABLED=true` in the .env
             # - ./app/rec:/src/app/rec
+            # Managed recorder: media may point to an already mounted NAS,
+            # but state must remain on a local filesystem for SQLite WAL.
+            # - /mnt/nas/mirotalk-recordings:/data/recordings
+            # - ./data/recording-state:/data/state
             # Mandatory volume if `RTMP_FROM_FILE=true` in the .env
             # - ./app/rtmp:/src/app/rtmp
             # Optional volumes for real-time updates:

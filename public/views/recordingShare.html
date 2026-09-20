@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="referrer" content="no-referrer" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>会议回放</title>
+        <style>
+            body {
+                margin: 0;
+                background: #10131a;
+                color: #edf1f7;
+                font-family: system-ui, sans-serif;
+            }
+            main {
+                max-width: 1100px;
+                margin: auto;
+                padding: 24px;
+            }
+            video {
+                width: 100%;
+                max-height: 70vh;
+                background: #000;
+                border-radius: 8px;
+            }
+            button {
+                padding: 9px 12px;
+                margin: 8px 6px 0 0;
+                background: #192232;
+                color: #edf1f7;
+                border: 1px solid #3a465b;
+                border-radius: 7px;
+                cursor: pointer;
+            }
+            .muted {
+                color: #aab6ca;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1 id="title">会议回放</h1>
+            <p id="state" class="muted"></p>
+            <video id="player" controls playsinline></video>
+            <div id="tracks"></div>
+            <script>
+                (() => {
+                    const parts = location.pathname.split('/');
+                    const shareId = parts.at(-2),
+                        secret = parts.at(-1),
+                        base = `/api/public/recordings/${encodeURIComponent(shareId)}/${encodeURIComponent(secret)}`;
+                    const player = document.getElementById('player');
+                    fetch(base, { cache: 'no-store' })
+                        .then((r) => (r.ok ? r.json() : Promise.reject()))
+                        .then((meeting) => {
+                            document.getElementById('title').textContent = `会议回放：${meeting.room_id}`;
+                            document.getElementById('state').textContent =
+                                `${meeting.state} · ${new Date(meeting.started_at).toLocaleString()}`;
+                            const tracks = document.getElementById('tracks');
+                            if (meeting.composition_available) {
+                                const b = document.createElement('button');
+                                b.textContent = '播放合成视频';
+                                b.onclick = () => (player.src = `${base}/assets/composition`);
+                                tracks.append(b);
+                            }
+                            for (const track of meeting.tracks) {
+                                const b = document.createElement('button');
+                                b.textContent = `${track.peer_name} · ${track.media_type}`;
+                                b.onclick = () => (player.src = `${base}/assets/${encodeURIComponent(track.id)}`);
+                                tracks.append(b);
+                            }
+                        })
+                        .catch(() => {
+                            document.getElementById('title').textContent = '此公开链接不可用或已被撤销';
+                        });
+                })();
+            </script>
+        </main>
+    </body>
+</html>

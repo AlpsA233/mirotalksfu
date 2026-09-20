@@ -185,6 +185,10 @@ Open [https://localhost:3010](https://localhost:3010) - done!
 
 > **Note:** Edit `app/src/config.js`, `.env`, and `docker-compose.yml` to customize your setup.
 
+### Managed meeting recording
+
+Set `MANAGED_RECORDING_ENABLED=true`, a strong `MANAGED_RECORDING_ADMIN_PASSWORD`, and persistent mounts for `/data/recordings` and `/data/state`. Open `/recordings` to enable recording for **new** meetings and browse playback. `/data/recordings` may be an OS-mounted NAS path; keep `/data/state` local to the host because SQLite WAL is not suitable for a network filesystem. Independent tracks are available first; an administrator can generate the 1080p combined video when needed.
+
 </details>
 
 <details>

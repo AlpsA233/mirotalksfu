@@ -10,10 +10,11 @@ const JWT_KEY = config.security?.jwt?.key || 'mirotalksfu_jwt_secret';
 const JWT_EXP = config.security?.jwt?.exp || '1h';
 
 module.exports = class ServerApi {
-    constructor(host = null, authorization = null) {
+    constructor(host = null, authorization = null, onEndMeeting = null) {
         this._host = host;
         this._authorization = authorization;
         this._api_key_secret = config.api.keySecret;
+        this._onEndMeeting = onEndMeeting;
     }
 
     isAuthorized() {
@@ -86,6 +87,14 @@ module.exports = class ServerApi {
             broadcast: true,
             redirect: redirect || '',
         });
+
+        if (this._onEndMeeting) {
+            return Promise.resolve(this._onEndMeeting(roomObj, 'api_end')).then(() => ({
+                success: true,
+                message: 'Meeting ended',
+                room: room,
+            }));
+        }
 
         // Remove all peers and close transports
         const peers = roomObj.getPeers();

@@ -177,7 +177,7 @@ module.exports = class Peer {
         this.producers.set(producer_id, producer);
     }
 
-    async createProducer(producerTransportId, producer_rtpParameters, producer_kind, producer_type) {
+    async createProducer(producerTransportId, producer_rtpParameters, producer_kind, producer_type, paused = false) {
         if (!producerTransportId || !producer_rtpParameters || !producer_kind || !producer_type) {
             throw new Error('Missing required parameters for creating a producer');
         }
@@ -197,6 +197,7 @@ module.exports = class Peer {
             producer = await producerTransport.produce({
                 kind: producer_kind,
                 rtpParameters: producer_rtpParameters,
+                paused: Boolean(paused),
             });
 
             this.addProducer(producer.id, producer);
