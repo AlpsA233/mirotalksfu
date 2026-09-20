@@ -5,6 +5,7 @@ const express = require('express');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { describeViews } = require('./RecordingPlayback');
 
 const COOKIE_NAME = 'mirotalk_recording_admin';
 const sessions = new Map();
@@ -84,14 +85,16 @@ function sendRangeFile(req, res, asset) {
             'Cache-Control': 'private, no-store',
             'X-Content-Type-Options': 'nosniff',
         });
+        if (req.query.download === '1') res.attachment(`meeting-recording${path.extname(asset.path)}`);
         if (!range) {
             res.set('Content-Length', stat.size);
             return fs.createReadStream(asset.path).pipe(res);
         }
         const match = /^bytes=(\d*)-(\d*)$/.exec(range);
         if (!match) return res.status(416).end();
-        const start = match[1] ? Number(match[1]) : 0;
-        const end = match[2] ? Number(match[2]) : stat.size - 1;
+        const suffix = !match[1] && match[2];
+        const start = suffix ? Math.max(0, stat.size - Number(match[2])) : Number(match[1] || 0);
+        const end = suffix ? stat.size - 1 : Math.min(match[2] ? Number(match[2]) : stat.size - 1, stat.size - 1);
         if (start < 0 || end < start || end >= stat.size)
             return res.status(416).set('Content-Range', `bytes */${stat.size}`).end();
         res.status(206).set({
@@ -111,11 +114,17 @@ function publicMeeting(manager, meeting) {
         state: meeting.state,
         composition_state: meeting.composition_state,
         composition_available: Boolean(meeting.composition_path),
+        views: describeViews(meeting),
         tracks: meeting.tracks
             .filter((track) => track.playback_path)
             .map((track) => ({
                 id: track.id,
                 peer_name: track.peer_name,
+                participant_id: crypto
+                    .createHash('sha256')
+                    .update(track.socket_id || track.id)
+                    .digest('hex')
+                    .slice(0, 24),
                 kind: track.kind,
                 media_type: track.media_type,
                 started_at: track.started_at,
@@ -163,6 +172,11 @@ function createRecordingRouter({ manager, config, viewsDir }) {
         res.set('Referrer-Policy', 'no-referrer');
         return res.sendFile(path.join(viewsDir, 'recordingShare.html'));
     });
+    router.get('/recordings/:meetingId', (req, res) => {
+        if (!manager.isAvailable() || !admin.configured)
+            return res.status(503).send('Managed recording is unavailable.');
+        return res.sendFile(path.join(viewsDir, 'recordingDetail.html'));
+    });
 
     router.post('/api/admin/recording/session', (req, res) => {
         if (!manager.isAvailable() || !admin.configured)
@@ -188,17 +202,48 @@ function createRecordingRouter({ manager, config, viewsDir }) {
         return res.json(manager.setEnabled(req.body.enabled));
     });
     router.get('/api/admin/recordings', requireAdmin, (req, res) => {
-        res.json({ meetings: manager.listMeetings({ limit: req.query.limit, offset: req.query.offset }) });
+        const options = {
+            limit: req.query.limit,
+            offset: req.query.offset,
+            search: req.query.search,
+            status: req.query.status,
+        };
+        res.json({
+            meetings: manager.listMeetings(options),
+            total: manager.store.countMeetings(options),
+            summary: manager.store.meetingSummary(),
+        });
     });
     router.get('/api/admin/recordings/:meetingId', requireAdmin, (req, res) => {
         const meeting = manager.getMeeting(req.params.meetingId);
         if (!meeting) return res.status(404).json({ error: 'Meeting not found' });
         return res.json(meeting);
     });
+    router.delete('/api/admin/recordings/:meetingId', requireAdmin, requireCsrf, async (req, res) => {
+        try {
+            if (!(await manager.deleteMeeting(req.params.meetingId)))
+                return res.status(404).json({ error: 'Meeting not found' });
+            return res.status(204).end();
+        } catch (error) {
+            return res.status(error.statusCode || 500).json({
+                error: error.statusCode ? error.message : '删除录像失败，请稍后重试。',
+            });
+        }
+    });
     router.get('/api/admin/recordings/:meetingId/assets/:assetId', requireAdmin, (req, res) => {
         const asset = manager.getAsset(req.params.meetingId, req.params.assetId);
         if (!asset) return res.status(404).json({ error: 'Asset not found' });
         return sendRangeFile(req, res, asset);
+    });
+    router.post('/api/admin/recordings/:meetingId/playback/:viewId', requireAdmin, requireCsrf, (req, res) => {
+        try {
+            const status = manager.preparePlayback(req.params.meetingId, req.params.viewId, {
+                retry: req.body?.retry === true,
+            });
+            res.status(status.state === 'processing' ? 202 : 200).json(status);
+        } catch (error) {
+            res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : '回放暂时不可用' });
+        }
     });
     router.post('/api/admin/recordings/:meetingId/composition', requireAdmin, requireCsrf, async (req, res) => {
         try {
@@ -244,6 +289,18 @@ function createRecordingRouter({ manager, config, viewsDir }) {
         if (!asset || !asset.public) return res.status(404).json({ error: 'Asset not found' });
         res.set('Referrer-Policy', 'no-referrer');
         return sendRangeFile(req, res, asset);
+    });
+    router.get('/api/public/recordings/:shareId/:secret/playback/:viewId', (req, res) => {
+        const share = shareForRequest(req);
+        if (!share) return res.status(404).json({ error: 'Recording share not found' });
+        try {
+            const status = manager.preparePlayback(share.meeting_id, req.params.viewId);
+            res.set('Cache-Control', 'no-store')
+                .status(status.state === 'processing' ? 202 : 200)
+                .json(status);
+        } catch (error) {
+            res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : '回放暂时不可用' });
+        }
     });
     return router;
 }

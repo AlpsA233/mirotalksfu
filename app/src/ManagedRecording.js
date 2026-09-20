@@ -1,12 +1,14 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const dgram = require('node:dgram');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const RecordingStore = require('./RecordingStore');
+const { playbackViews, describeViews, renderPlayback, normalizeAudio } = require('./RecordingPlayback');
 
 const LOOPBACK = '127.0.0.1';
 
@@ -50,15 +52,64 @@ function waitForExit(child) {
 function stopChild(child, timeoutMs = 5000) {
     if (!child || child.exitCode !== null || child.killed) return Promise.resolve();
     return new Promise((resolve) => {
+        // FFmpeg 5.x needs a second signal to interrupt a blocked live-input
+        // read after transcode initialization. Give it time to flush the muxer
+        // before the final SIGKILL fallback, including when RTP has stopped.
+        const interrupt = setTimeout(
+            () => {
+                if (child.exitCode === null && child.signalCode === null) child.kill('SIGINT');
+            },
+            Math.min(1000, timeoutMs / 2)
+        );
+        interrupt.unref?.();
         const force = setTimeout(() => {
             if (child.exitCode === null) child.kill('SIGKILL');
         }, timeoutMs);
         force.unref?.();
         child.once('close', () => {
+            clearTimeout(interrupt);
             clearTimeout(force);
             resolve();
         });
         child.kill('SIGINT');
+    });
+}
+
+async function finishRtpInput(track) {
+    const { child, rtcpPort, recordingSsrc } = track;
+    if (!child || child.exitCode !== null || child.signalCode !== null || !rtcpPort || !recordingSsrc) return;
+
+    // End the live input before signalling FFmpeg so it can flush the muxer.
+    // Include a BYE reason: FFmpeg 5.x drops RTP/RTCP packets shorter than 12 bytes.
+    const bye = Buffer.alloc(12);
+    bye[0] = 0x81;
+    bye[1] = 203;
+    bye.writeUInt16BE(2, 2);
+    bye.writeUInt32BE(recordingSsrc, 4);
+    bye[8] = 3;
+    bye.write('end', 9);
+
+    await new Promise((resolve) => {
+        const socket = dgram.createSocket('udp4');
+        let settled = false;
+        const done = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            child.removeListener('close', done);
+            try {
+                socket.close();
+            } catch {
+                // A failed bind can leave the socket already closed.
+            }
+            resolve();
+        };
+        const timer = setTimeout(done, 1500);
+        child.once('close', done);
+        socket.once('error', done);
+        socket.send(bye, rtcpPort, LOOPBACK, (error) => {
+            if (error) done();
+        });
     });
 }
 
@@ -90,6 +141,9 @@ class ManagedRecording extends EventEmitter {
         this.nextPort = this.config.rtpPortMin;
         this.compositionQueue = Promise.resolve();
         this.backgroundJobs = new Set();
+        this.meetingJobs = new Map();
+        this.deletingMeetings = new Set();
+        this.playbackJobs = new Map();
     }
 
     async initialize() {
@@ -300,6 +354,7 @@ class ManagedRecording extends EventEmitter {
     async startTrack(track) {
         await fsp.mkdir(path.dirname(track.partialPath), { recursive: true });
         const { rtpPort, rtcpPort } = this.allocatePorts();
+        track.rtcpPort = rtcpPort;
         const transport = await track.meeting.room.router.createPlainTransport({
             listenInfo: { protocol: 'udp', ip: LOOPBACK },
             rtcpMux: false,
@@ -312,6 +367,7 @@ class ManagedRecording extends EventEmitter {
             paused: true,
         });
         track.consumer = consumer;
+        track.recordingSsrc = consumer.rtpParameters.encodings[0]?.ssrc;
         const sdpPath = `${track.partialPath}.sdp`;
         await fsp.writeFile(sdpPath, this.createSdp(consumer, rtpPort, rtcpPort));
 
@@ -465,6 +521,7 @@ class ManagedRecording extends EventEmitter {
             track.meeting.recoveryTimers.delete(track.id);
             const endedAt = Date.now();
             track.timeline.push({ type: reason, at: endedAt, offsetMs: endedAt - track.meeting.startedAt });
+            await finishRtpInput(track);
             await stopChild(track.child);
             await this.teardownTrackTransport(track);
             try {
@@ -486,7 +543,8 @@ class ManagedRecording extends EventEmitter {
                 this.generatePlayback(track).catch((error) => {
                     if (this.store)
                         this.store.updateTrack(track.id, { state: 'incomplete', failure_reason: error.message });
-                })
+                }),
+                track.meeting.id
             );
         })();
         return track.stopping;
@@ -523,9 +581,17 @@ class ManagedRecording extends EventEmitter {
         this.store.updateTrack(track.id, { state: 'ready', playback_path: relativePath });
     }
 
-    startBackground(job) {
+    startBackground(job, meetingId = null) {
+        if (meetingId) this.meetingJobs.set(meetingId, (this.meetingJobs.get(meetingId) || 0) + 1);
         let tracked;
-        tracked = Promise.resolve(job).finally(() => this.backgroundJobs.delete(tracked));
+        tracked = Promise.resolve(job).finally(() => {
+            this.backgroundJobs.delete(tracked);
+            if (meetingId) {
+                const remaining = this.meetingJobs.get(meetingId) - 1;
+                if (remaining) this.meetingJobs.set(meetingId, remaining);
+                else this.meetingJobs.delete(meetingId);
+            }
+        });
         this.backgroundJobs.add(tracked);
         return tracked;
     }
@@ -583,16 +649,93 @@ class ManagedRecording extends EventEmitter {
 
     getMeeting(meetingId) {
         const meeting = this.store?.getMeeting(meetingId);
-        return meeting ? { ...meeting, tracks: this.store.listTracks(meetingId) } : null;
+        return meeting ? this.describeMeeting({ ...meeting, tracks: this.store.listTracks(meetingId) }) : null;
     }
 
     listMeetings(options) {
-        return this.store?.listMeetings(options) || [];
+        return (this.store?.listMeetings(options) || []).map((meeting) => this.describeMeeting(meeting));
+    }
+
+    describeMeeting(meeting) {
+        return { ...meeting, views: describeViews(meeting), can_delete: this.canDeleteMeeting(meeting.id) };
+    }
+
+    preparePlayback(meetingId, viewId, { retry = false } = {}) {
+        const meeting = this.getMeeting(meetingId);
+        const view = meeting && playbackViews(meeting).find((item) => item.id === viewId);
+        if (!view) throw Object.assign(new Error('未找到此参与者的回放'), { statusCode: 404 });
+        if (this.deletingMeetings.has(meetingId) || !view.ready)
+            throw Object.assign(new Error('录像仍在处理中，请稍后重试'), { statusCode: 409 });
+        const file = path.join(this.config.storageDir, meetingId, 'views', `${view.assetId}.mp4`);
+        if (fs.existsSync(file))
+            return {
+                state: 'ready',
+                assetId: view.assetId,
+                started_at: view.started_at,
+                posterAssetId: fs.existsSync(file.replace(/\.mp4$/, '.jpg')) ? `${view.assetId}-poster` : null,
+            };
+        const key = `${meetingId}/${view.assetId}`;
+        const existing = this.playbackJobs.get(key);
+        if (existing && !(retry && existing.state === 'failed')) return existing;
+        const status = { state: 'processing', assetId: view.assetId, started_at: view.started_at };
+        this.playbackJobs.set(key, status);
+        const run = async () => {
+            try {
+                await renderPlayback({ meeting, view, ...this.config });
+                status.state = 'ready';
+                status.posterAssetId = fs.existsSync(file.replace(/\.mp4$/, '.jpg')) ? `${view.assetId}-poster` : null;
+            } catch {
+                status.state = 'failed';
+                status.error = '回放准备失败，请重试。原始录像仍然保留。';
+            }
+        };
+        this.compositionQueue = this.startBackground(this.compositionQueue.then(run, run), meetingId);
+        return status;
+    }
+
+    canDeleteMeeting(meetingId) {
+        return (
+            !this.meetings.has(meetingId) && !this.meetingJobs.has(meetingId) && !this.deletingMeetings.has(meetingId)
+        );
+    }
+
+    async deleteMeeting(meetingId) {
+        if (!this.store?.getMeeting(meetingId)) return false;
+        if (!this.canDeleteMeeting(meetingId)) {
+            throw Object.assign(new Error('录像正在录制、处理或删除中，请稍后重试。'), { statusCode: 409 });
+        }
+        const directory = path.resolve(this.config.storageDir, meetingId);
+        if (path.dirname(directory) !== this.config.storageDir || directory === this.config.storageDir) {
+            throw Object.assign(new Error('Invalid recording directory'), { statusCode: 400 });
+        }
+        this.deletingMeetings.add(meetingId);
+        try {
+            // Keep metadata on a filesystem failure so deletion can be retried.
+            // Foreign keys also remove tracks and invalidate every share link.
+            await fsp.rm(directory, { recursive: true, force: true });
+            this.store.deleteMeeting(meetingId);
+            for (const key of this.playbackJobs.keys())
+                if (key.startsWith(`${meetingId}/`)) this.playbackJobs.delete(key);
+            return true;
+        } finally {
+            this.deletingMeetings.delete(meetingId);
+        }
     }
 
     getAsset(meetingId, assetId, { publicOnly = false } = {}) {
         const meeting = this.getMeeting(meetingId);
         if (!meeting) return null;
+        const poster = assetId.endsWith('-poster');
+        const view = playbackViews(meeting).find((item) => item.assetId === (poster ? assetId.slice(0, -7) : assetId));
+        if (view) {
+            const file = path.join(
+                this.config.storageDir,
+                meetingId,
+                'views',
+                `${view.assetId}.${poster ? 'jpg' : 'mp4'}`
+            );
+            return fs.existsSync(file) ? { path: file, type: poster ? 'image/jpeg' : 'video/mp4', public: true } : null;
+        }
         if (assetId === 'composition' && meeting.composition_path) {
             return {
                 path: path.join(this.config.storageDir, meeting.id, meeting.composition_path),
@@ -618,8 +761,9 @@ class ManagedRecording extends EventEmitter {
 
     async queueComposition(meetingId, primaryTrackId = null) {
         if (!this.store) throw new Error('Managed recording is unavailable');
+        if (this.deletingMeetings.has(meetingId)) throw new Error('录像正在删除中。');
         const run = async () => this.composeMeeting(meetingId, primaryTrackId);
-        this.compositionQueue = this.compositionQueue.then(run, run);
+        this.compositionQueue = this.startBackground(this.compositionQueue.then(run, run), meetingId);
         return this.compositionQueue;
     }
 
@@ -647,7 +791,7 @@ class ManagedRecording extends EventEmitter {
                   a.id === selectedPrimaryTrackId ? -1 : b.id === selectedPrimaryTrackId ? 1 : 0
               )
             : videos;
-        const inputs = [...orderedVideos, ...audio];
+        const inputs = orderedVideos;
         const args = ['-nostdin', '-y', '-loglevel', 'error'];
         for (const track of inputs) {
             const offset = Math.max(0, track.started_at - meeting.started_at) / 1000;
@@ -659,12 +803,11 @@ class ManagedRecording extends EventEmitter {
             );
         }
         const videoInputs = orderedVideos.map((_, index) => index);
-        const audioInputs = audio.map((_, index) => orderedVideos.length + index);
         const filters = [];
         if (videoInputs.length) {
             const labels = videoInputs.map(
                 (index) =>
-                    `[${index}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[v${index}]`
+                    `[${index}:v]fps=30,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[v${index}]`
             );
             filters.push(...labels);
             if (videoInputs.length === 1) filters.push('[v0]null[vout]');
@@ -683,33 +826,46 @@ class ManagedRecording extends EventEmitter {
                 );
             }
         }
-        if (audioInputs.length)
-            filters.push(
-                `${audioInputs.map((index) => `[${index}:a]`).join('')}amix=inputs=${audioInputs.length}:duration=longest[aout]`
-            );
         const tempRelativePath = path.join('composition', 'current.partial.mp4');
         const outputRelativePath = path.join('composition', 'current.mp4');
         const tempPath = path.join(this.config.storageDir, meeting.id, tempRelativePath);
         const outputPath = path.join(this.config.storageDir, meeting.id, outputRelativePath);
         await fsp.mkdir(path.dirname(tempPath), { recursive: true });
-        if (filters.length) args.push('-filter_complex', filters.join(';'));
-        if (videoInputs.length)
-            args.push('-map', '[vout]', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
-        if (audioInputs.length) args.push('-map', '[aout]', '-c:a', 'aac', '-b:a', '128k');
-        args.push('-movflags', '+faststart', tempPath);
-        const processInfo = await waitForSpawn(this.config.ffmpegPath, args);
-        const exit = await waitForExit(processInfo.child);
-        if (exit.code !== 0) {
+        const normalizedAudio = path.join(path.dirname(tempPath), 'current.audio.flac');
+        try {
+            if (audio.length) {
+                await normalizeAudio(
+                    audio.map((track) => ({
+                        file: path.join(this.config.storageDir, meeting.id, track.raw_path),
+                        offset: Math.max(0, track.started_at - meeting.started_at) / 1000,
+                    })),
+                    normalizedAudio,
+                    this.config.ffmpegPath
+                );
+                args.push('-i', normalizedAudio);
+            }
+            if (filters.length) args.push('-filter_complex', filters.join(';'));
+            if (videoInputs.length)
+                args.push('-map', '[vout]', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
+            if (audio.length) args.push('-map', `${orderedVideos.length}:a`, '-c:a', 'aac', '-b:a', '128k');
+            args.push('-movflags', '+faststart', tempPath);
+            const processInfo = await waitForSpawn(this.config.ffmpegPath, args);
+            const exit = await waitForExit(processInfo.child);
+            if (exit.code !== 0) throw new Error(`Composition failed: ${processInfo.getStderr() || exit.code}`);
+            await fsp.rename(tempPath, outputPath);
+            this.store.updateMeeting(meetingId, {
+                composition_state: 'ready',
+                composition_path: outputRelativePath,
+                composition_updated_at: Date.now(),
+            });
+            return this.getMeeting(meetingId);
+        } catch (error) {
             this.store.updateMeeting(meetingId, { composition_state: 'failed' });
-            throw new Error(`Composition failed: ${processInfo.getStderr() || exit.code}`);
+            throw error;
+        } finally {
+            await fsp.rm(normalizedAudio, { force: true });
+            await fsp.rm(tempPath, { force: true });
         }
-        await fsp.rename(tempPath, outputPath);
-        this.store.updateMeeting(meetingId, {
-            composition_state: 'ready',
-            composition_path: outputRelativePath,
-            composition_updated_at: Date.now(),
-        });
-        return this.getMeeting(meetingId);
     }
 }
 

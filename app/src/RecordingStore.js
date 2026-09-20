@@ -129,10 +129,46 @@ class RecordingStore {
         return this.db.prepare('SELECT * FROM recording_meetings WHERE id = ?').get(id) || null;
     }
 
-    listMeetings({ limit = 50, offset = 0 } = {}) {
+    deleteMeeting(id) {
+        return this.db.prepare('DELETE FROM recording_meetings WHERE id = ?').run(id).changes > 0;
+    }
+
+    meetingFilter({ search = '', status = '' } = {}) {
+        const term = String(search || '')
+            .trim()
+            .slice(0, 100);
+        const conditions = [],
+            values = [];
+        if (term) {
+            conditions.push(
+                '(instr(lower(room_id), lower(?)) > 0 OR EXISTS (SELECT 1 FROM recording_tracks t WHERE t.meeting_id = recording_meetings.id AND instr(lower(t.peer_name), lower(?)) > 0))'
+            );
+            values.push(term, term);
+        }
+        if (status === 'ready') conditions.push("state = 'ready'");
+        if (status === 'processing') conditions.push("state IN ('recording', 'finalizing')");
+        if (status === 'failed') conditions.push("state NOT IN ('ready', 'recording', 'finalizing')");
+        return { sql: conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '', values };
+    }
+
+    countMeetings(options) {
+        const { sql, values } = this.meetingFilter(options);
+        return this.db.prepare(`SELECT count(*) AS total FROM recording_meetings${sql}`).get(...values).total;
+    }
+
+    meetingSummary() {
+        return this.db
+            .prepare(
+                "SELECT count(*) AS total, coalesce(sum(state = 'ready'), 0) AS ready, coalesce(sum(state IN ('recording', 'finalizing')), 0) AS processing FROM recording_meetings"
+            )
+            .get();
+    }
+
+    listMeetings({ limit = 50, offset = 0, search, status } = {}) {
+        const { sql, values } = this.meetingFilter({ search, status });
         const meetings = this.db
-            .prepare('SELECT * FROM recording_meetings ORDER BY started_at DESC LIMIT ? OFFSET ?')
-            .all(Math.min(Math.max(Number(limit) || 50, 1), 200), Math.max(Number(offset) || 0, 0));
+            .prepare(`SELECT * FROM recording_meetings${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`)
+            .all(...values, Math.min(Math.max(Number(limit) || 50, 1), 200), Math.max(Number(offset) || 0, 0));
         return meetings.map((meeting) => ({ ...meeting, tracks: this.listTracks(meeting.id) }));
     }
 

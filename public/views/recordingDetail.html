@@ -8,12 +8,66 @@
         <link rel="stylesheet" href="/css/Recordings.css?v=3" />
         <script defer src="/js/Recordings.js?v=3"></script>
     </head>
-    <body data-page="share">
+    <body data-page="detail">
+        <aside class="sidebar">
+            <a class="brand" href="/recordings"
+                ><span class="brand-mark" data-icon="aperture"></span
+                ><span>MiroTalk<small>会议录制工作台</small></span></a
+            >
+            <div class="nav-label">工作空间</div>
+            <nav>
+                <a class="nav-item selected" href="/recordings" aria-current="page"
+                    ><span data-icon="library"></span>录像库<span class="nav-dot"></span></a
+                ><a class="nav-item" href="/"><span data-icon="video"></span>返回会议</a>
+            </nav>
+            <div class="sidebar-bottom">
+                <span class="status-dot"></span>私有录制空间
+                <p>留住每一次有价值的交流。</p>
+                <span class="version">MIROTALK SFU</span>
+            </div>
+        </aside>
         <div class="workspace">
             <header class="topbar">
-                <a class="brand" href="/"><span class="brand-mark" data-icon="aperture"></span><span>MiroTalk</span></a
-                ><span class="shared-badge"><span data-icon="link"></span>共享会议回放</span>
+                <div class="breadcrumb">
+                    <a href="/recordings">工作空间</a><span>/</span><a href="/recordings">录像库</a
+                    ><span id="detailCrumb" hidden>/ 会议回放</span>
+                </div>
+                <div class="account">
+                    <span class="account-avatar" data-icon="user"></span><span>管理员</span
+                    ><button
+                        class="icon-button"
+                        id="logout"
+                        aria-label="退出登录"
+                        title="退出登录"
+                        data-icon="logout"
+                    ></button>
+                </div>
             </header>
+            <section id="login" class="login-shell" hidden>
+                <div class="login-card">
+                    <span class="brand-mark" data-icon="aperture"></span>
+                    <div class="eyebrow">YOUR MEETINGS, REVISITED</div>
+                    <h1>欢迎回到录像库</h1>
+                    <p class="muted">登录后，查看和管理你的会议录制。</p>
+                    <form id="loginForm">
+                        <label for="username">管理员账号</label
+                        ><input id="username" value="admin" autocomplete="username" required /><label for="password"
+                            >密码</label
+                        ><input
+                            id="password"
+                            type="password"
+                            autocomplete="current-password"
+                            placeholder="输入管理员密码"
+                            required
+                        />
+                        <p id="loginError" class="form-error" role="alert"></p>
+                        <button id="loginButton" class="button primary" type="submit">
+                            登录工作台 <span data-icon="arrow"></span>
+                        </button>
+                    </form>
+                </div>
+                <p class="login-note">你的会议，保存在自己的空间。</p>
+            </section>
             <main id="content" class="page-content" hidden>
                 <a class="back-link admin-only" href="/recordings"><span data-icon="chevronLeft"></span>返回录像库</a>
                 <div class="detail-heading">

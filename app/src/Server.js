@@ -2254,7 +2254,7 @@ function startServer() {
             await ngrok.authtoken(config?.integrations?.ngrok?.authToken);
             const listener = await ngrok.forward({ addr: config?.server?.listen?.port });
             const tunnelUrl = listener.url();
-            log.info('Server config', getServerConfig(tunnelUrl));
+            log.info('Server started', { host, tunnelUrl, version: packageJson.version });
         } catch (err) {
             log.warn('Ngrok Start error', err);
             await ngrok.kill();
@@ -2297,7 +2297,7 @@ function startServer() {
             if (config?.integrations?.ngrok?.enabled && config?.integrations?.ngrok?.authToken !== '') {
                 return ngrokStart();
             }
-            log.info('Server config', getServerConfig());
+            log.info('Server started', { host, version: packageJson.version });
 
             // Warn if default secrets are still in use
             if (config.api?.keySecret === 'mirotalksfu_default_secret') {
