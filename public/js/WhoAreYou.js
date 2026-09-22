@@ -38,15 +38,17 @@ function updateElapsedTime() {
         const template = getWaitingRoomBrand('waitingRoomElapsedMinutes', 'Waiting for {minutes}');
         waitingElapsedText.textContent = template.replace(
             '{minutes}',
-            minutes + (minutes === 1 ? ' minute' : ' minutes')
+            minutes + (window.i18n?.getLang() === 'zh' ? ' 分钟' : minutes === 1 ? ' minute' : ' minutes')
         );
     }
 }
 elapsedTimerId = setInterval(updateElapsedTime, 10000);
+document.addEventListener('i18n:changed', updateElapsedTime);
 
 function getWaitingRoomBrand(key, fallback) {
     try {
-        return (typeof BRAND !== 'undefined' && BRAND?.whoAreYou?.[key]) || fallback;
+        const source = (typeof BRAND !== 'undefined' && BRAND?.whoAreYou?.[key]) || fallback;
+        return key === 'waitingRoomElapsedMinutes' ? window.i18n?.t(source, 'pages') || source : source;
     } catch (e) {
         return fallback;
     }

@@ -12,6 +12,8 @@ function loadScript(src) {
 }
 
 function googleTranslateElementInit() {
+    // A native choice can be made while the external script is still loading.
+    if (window.i18n?.googleAllowed === false) return;
     new google.translate.TranslateElement(
         {
             pageLanguage: 'en',
@@ -28,7 +30,8 @@ function googleTranslateElementInit() {
         stored = localStorage.getItem(GOOGLE_LANG_KEY);
     } catch (e) {}
 
-    const language = stored || BRAND?.app?.language || 'en';
+    const language = stored || window.i18n?.getLang() || BRAND?.app?.language || 'en';
+    window.i18n?.setGoogleActive(language !== 'en');
 
     console.log('Language', language);
 
@@ -38,6 +41,7 @@ function googleTranslateElementInit() {
         select.addEventListener('change', () => {
             const value = select.value;
             if (!value) return;
+            window.i18n?.setGoogleActive(value !== 'en');
             try {
                 localStorage.setItem(GOOGLE_LANG_KEY, value);
             } catch (e) {}

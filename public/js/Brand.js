@@ -45,6 +45,7 @@ const loginButton = document.getElementById('loginButton');
 let BRAND = {
     app: {
         language: 'en',
+        translationMode: 'auto',
         name: 'MiroTalk SFU',
         title: 'MiroTalk SFU<br />Free browser based Real-time video calls.<br />Simple, Secure, Fast.',
         description:
@@ -366,4 +367,4 @@ function customizeLogin() {
     }
 }
 
-initialize();
+window.brandReady = initialize();

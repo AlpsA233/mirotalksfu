@@ -22,6 +22,9 @@
 
         <!-- xss (provides filterXSS) -->
         <script src="https://cdn.jsdelivr.net/npm/xss/dist/xss.min.js"></script>
+        <script defer src="/js/Brand.js"></script>
+        <script defer src="/js/I18n.js"></script>
+        <link rel="stylesheet" href="/css/I18n.css" />
     </head>
     <body>
         <header class="cr-header">
@@ -29,6 +32,7 @@
                 <img src="../images/logo.svg" alt="" width="36" height="36" />
                 <span>MiroTalk SFU</span>
             </a>
+            <div class="language-picker" data-language-picker></div>
             <a class="cr-back" href="/">Back to home</a>
         </header>
         <main class="cr-page">

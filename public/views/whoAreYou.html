@@ -41,7 +41,8 @@
 
         <script async src="../js/Stats.js"></script>
         <script defer src="../js/Brand.js"></script>
-        <script async src="../js/Translate.js"></script>
+        <script defer src="/js/I18n.js"></script>
+        <script defer src="../js/Translate.js"></script>
 
         <!-- xss -->
 
@@ -53,6 +54,7 @@
 
         <script src="https://unpkg.com/animejs@3.0.1/lib/anime.min.js"></script>
         <script src="https://unpkg.com/scrollreveal@4.0.0/dist/scrollreveal.min.js"></script>
+        <link rel="stylesheet" href="/css/I18n.css" />
     </head>
     <body class="is-boxed has-animations">
         <div id="google_translate_element"></div>
@@ -61,6 +63,7 @@
             <header class="site-header reveal-from-top">
                 <div class="container">
                     <div class="site-header-inner">
+                        <div class="language-picker" data-language-picker></div>
                         <div class="brand header-brand">
                             <h1 class="m-0">
                                 <a href="/">
@@ -98,7 +101,7 @@
                                 </p>
                                 <div id="waitingRoomName" class="waiting-room-name" style="display: none">
                                     <i class="fa-solid fa-door-open"></i>
-                                    <span id="waitingRoomNameText"></span>
+                                    <span id="waitingRoomNameText" translate="no"></span>
                                 </div>
                                 <div class="waiting-spinner">
                                     <div class="waiting-spinner-dot"></div>

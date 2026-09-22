@@ -47,12 +47,14 @@
         <!-- Js scripts -->
         <script defer src="../js/Widget.js"></script>
         <script defer src="../js/Brand.js"></script>
+        <script defer src="/js/I18n.js"></script>
         <script async src="../js/Stats.js"></script>
 
         <script defer src="https://cdn.jsdelivr.net/npm/sweetalert2@11.4.8"></script>
         <script src="https://unpkg.com/animejs@3.0.1/lib/anime.min.js"></script>
         <script src="https://unpkg.com/scrollreveal@4.0.0/dist/scrollreveal.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/xss/dist/xss.min.js"></script>
+        <link rel="stylesheet" href="/css/I18n.css" />
     </head>
     <body class="is-boxed has-animations">
         <div id="snow-container"></div>
@@ -60,6 +62,7 @@
             <header class="site-header">
                 <div class="container">
                     <div class="site-header-inner">
+                        <div class="language-picker" data-language-picker></div>
                         <div class="brand header-brand">
                             <div class="m-0">
                                 <a href="/">
@@ -164,7 +167,7 @@
                                 </div>
                                 <div id="lastRoomContainer" class="last-room">
                                     <span id="joinLastLabel">Your recent room:</span>
-                                    <a id="lastRoom"></a>
+                                    <a id="lastRoom" translate="no"></a>
                                 </div>
                             </div>
                         </div>

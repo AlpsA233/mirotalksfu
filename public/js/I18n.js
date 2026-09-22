@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * MiroTalk SFU - Optional native (human) translation for the in-room UI.
+ * MiroTalk SFU - Native translation for the meeting UI and entry pages.
  *
  * When a native language file exists at `public/lang/<lang>.json` for the configured
  * UI language, it is used to translate the in-room UI and the Google Translate widget
@@ -23,7 +23,7 @@
  */
 
 (function () {
-    const LANG_PATH = '../lang/';
+    const LANG_PATH = '/lang/';
 
     // Flag + native name shown in the in-room Language settings when native mode is active.
     const LANG_DISPLAY = {
@@ -63,7 +63,7 @@
      * Resolve a translation for a given source string within a namespace.
      * Preserves surrounding whitespace of the original string.
      */
-    const NS_ORDER = ['tooltips', 'buttons', 'labels', 'dialogs', 'toasts'];
+    const NS_ORDER = ['tooltips', 'buttons', 'labels', 'dialogs', 'toasts', 'pages'];
 
     function lookup(key, namespace) {
         const table = state.dict && state.dict[namespace];
@@ -74,9 +74,18 @@
         return null;
     }
 
-    function translate(text, namespace) {
+    function translate(text, namespace, values) {
+        const translated = translateSource(text, namespace);
+        if (!values || typeof translated !== 'string') return translated;
+        return translated.replace(/\{(\w+)\}/g, (token, key) =>
+            Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : token
+        );
+    }
+
+    function translateSource(text, namespace) {
         if (!state.native || typeof text !== 'string' || text.length === 0) return text;
-        const key = text.trim();
+        const source = text.trim();
+        const key = source.replace(/\s+/g, ' ');
         if (key.length === 0) return text;
         // Preferred namespace first (keeps context-specific translations like "Cancel"),
         // then fall back across the others so a string is still translated if it exists elsewhere.
@@ -88,7 +97,7 @@
                 if (value !== null) break;
             }
         }
-        return value !== null ? text.replace(key, value) : text;
+        return value !== null ? text.replace(source, () => value) : text;
     }
 
     // Public API used by Translate.js and (optionally) other scripts.
@@ -101,6 +110,8 @@
         t: translate,
         isNative: () => state.native,
         getLang: () => state.lang,
+        setLanguage: applyLanguage,
+        setGoogleActive: (active) => (state.googleActive = active),
         googleAllowed: true,
     };
 
@@ -217,9 +228,7 @@
     function shouldSkip(element) {
         if (!element) return false;
         if (SKIP_TAGS.has(element.tagName)) return true;
-        if (element.classList && element.classList.contains('notranslate')) return true;
-        if (element.getAttribute && element.getAttribute('translate') === 'no') return true;
-        if (element.hasAttribute && element.hasAttribute('data-i18n-skip')) return true;
+        if (element.closest('.notranslate, [translate="no"], [data-i18n-skip]')) return true;
         return false;
     }
 
@@ -234,10 +243,11 @@
             if (typeof current !== 'string' || current.trim().length === 0) continue;
             // Keep the original value so switching language can re-translate from English.
             const prop = '__i18nAttr_' + attr;
-            const source = element[prop] != null ? element[prop] : current;
+            const previous = element[prop];
+            const source = previous && previous.rendered === current ? previous.source : current;
             const next = translate(source, ns);
+            element[prop] = { source, rendered: next };
             if (next !== current) {
-                if (element[prop] == null) element[prop] = source;
                 element.setAttribute(attr, next);
             }
         }
@@ -247,10 +257,11 @@
         const parent = node.parentElement;
         if (!parent || shouldSkip(parent)) return;
         if (parent.closest('.notranslate, [translate="no"], [data-i18n-skip]')) return;
-        const source = node.__i18nSrc != null ? node.__i18nSrc : node.nodeValue;
+        const previous = node.__i18nText;
+        const source = previous && previous.rendered === node.nodeValue ? previous.source : node.nodeValue;
         const next = translate(source, namespaceFor(node));
+        node.__i18nText = { source, rendered: next };
         if (next !== node.nodeValue) {
-            if (node.__i18nSrc == null) node.__i18nSrc = source;
             node.nodeValue = next;
         }
     }
@@ -282,10 +293,11 @@
             if (forcedNamespace) {
                 const parent = node.parentElement;
                 const ns = parent && parent.closest('button, [role="button"]') ? 'buttons' : forcedNamespace;
-                const source = node.__i18nSrc != null ? node.__i18nSrc : node.nodeValue;
+                const previous = node.__i18nText;
+                const source = previous && previous.rendered === node.nodeValue ? previous.source : node.nodeValue;
                 const next = translate(source, ns);
+                node.__i18nText = { source, rendered: next };
                 if (next !== node.nodeValue) {
-                    if (node.__i18nSrc == null) node.__i18nSrc = source;
                     node.nodeValue = next;
                 }
             } else {
@@ -296,17 +308,21 @@
 
     function applyStatic() {
         translateTree(document.body);
+        translateTree(document.querySelector('title'));
+        document.documentElement.lang = state.lang === 'zh' ? 'zh-CN' : state.lang;
     }
 
     // Translate content added after load (device menus, chat list, participant menus, tooltips).
-    // Structure-preserving: only text-node values and known attributes change, so no observer loop
-    // (characterData/attributes are not observed) and no broken event handlers.
+    // Only update changed text and known attributes; preserve elements and event handlers.
     let observer = null;
 
     function installObserver() {
         if (observer || typeof MutationObserver === 'undefined' || !document.body) return;
         observer = new MutationObserver((mutations) => {
             for (const mutation of mutations) {
+                if (mutation.type === 'characterData') translateTextNode(mutation.target);
+                if (mutation.type === 'attributes' && !shouldSkip(mutation.target))
+                    translateAttributes(mutation.target);
                 for (const node of mutation.addedNodes) {
                     try {
                         if (node.nodeType === Node.ELEMENT_NODE) translateTree(node);
@@ -317,7 +333,13 @@
                 }
             }
         });
-        observer.observe(document.body, { childList: true, subtree: true });
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+            attributes: true,
+            attributeFilter: ATTR_KEYS,
+        });
     }
 
     // Update already-created tippy tooltips to the current language (uses recorded originals).
@@ -336,41 +358,62 @@
     }
 
     // Live language switch (no reload): load the dict, then re-translate the page from stored originals.
+    let languageRequest = 0;
     async function applyLanguage(lang) {
-        state.lang = lang;
+        lang = normalizeLang(lang);
+        if (!LANG_DISPLAY[lang]) return false;
+        const request = ++languageRequest;
+        let dict = null;
         try {
-            if (lang === configLang()) localStorage.removeItem(OVERRIDE_KEY);
-            else localStorage.setItem(OVERRIDE_KEY, lang);
-        } catch (e) {
-            console.warn('i18n: cannot persist language choice', e.message);
-        }
-
-        if (lang === 'en') {
-            state.native = false;
-            state.dict = null;
-        } else {
-            try {
+            if (lang !== 'en') {
                 const response = await fetch(`${LANG_PATH}${encodeURIComponent(lang)}.json`, { cache: 'no-cache' });
                 const data = response.ok ? await response.json() : null;
-                if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-                    state.dict = data;
-                    state.native = true;
-                } else {
-                    state.native = false;
-                    state.dict = null;
-                }
-            } catch (error) {
-                console.warn(`i18n: cannot load "${lang}"`, error.message);
-                state.native = false;
-                state.dict = null;
+                if (!data || typeof data !== 'object' || !Object.keys(data).length)
+                    throw new Error('Language unavailable');
+                dict = data;
             }
+        } catch (error) {
+            if (request !== languageRequest) return false;
+            console.warn(`i18n: cannot load "${lang}"`, error.message);
+            updateLanguageControls(true);
+            return false;
         }
-
-        translateTree(document.body);
+        if (request !== languageRequest) return false;
+        persistLanguage(lang);
+        // Remove machine-translated DOM through a reload before using the native dictionary.
+        if (state.googleActive) {
+            location.reload();
+            return true;
+        }
+        state.lang = lang;
+        state.dict = dict;
+        state.native = Boolean(dict);
+        window.i18n.googleAllowed = false;
+        applyStatic();
         refreshTooltips();
+        updateLanguageControls();
+        document.dispatchEvent(new CustomEvent('i18n:changed', { detail: { lang } }));
+        return true;
     }
 
     const OVERRIDE_KEY = 'uiLanguageOverride';
+
+    function normalizeLang(lang) {
+        const code = String(lang || 'en').toLowerCase();
+        if (/^zh(?:-|$)/.test(code)) return 'zh';
+        return LANG_DISPLAY[code.split('-')[0]] ? code.split('-')[0] : code;
+    }
+
+    function persistLanguage(lang) {
+        try {
+            localStorage.setItem(OVERRIDE_KEY, lang);
+            localStorage.removeItem('googleTransLang');
+            // Prevent a previous Google selection from translating the native page on reload.
+            document.cookie = 'googtrans=; Max-Age=0; path=/';
+        } catch (error) {
+            console.warn('i18n: cannot persist language choice', error.message);
+        }
+    }
 
     function getOverride() {
         try {
@@ -383,35 +426,60 @@
     function configLang() {
         // BRAND is declared with `let` in Brand.js (global lexical binding, not window.BRAND).
         const brand = typeof BRAND !== 'undefined' && BRAND ? BRAND : window.BRAND || {};
-        return (brand.app && brand.app.language) || 'en';
+        return normalizeLang(brand.app && brand.app.language);
     }
 
     // UI_TRANSLATION_MODE (via config.ui.brand.app.translationMode): auto | native | google.
-    // Backward compatible: if unset/absent, use Google machine translation (pre-native behavior).
+    // A user's native language choice also works on existing installations configured for Google.
     function configMode() {
+        const override = getOverride();
+        if (override && LANG_DISPLAY[normalizeLang(override)]) return 'native';
         const brand = typeof BRAND !== 'undefined' && BRAND ? BRAND : window.BRAND || {};
         const m = brand.app && brand.app.translationMode;
-        return m === 'native' || m === 'auto' || m === 'google' ? m : 'google';
+        return m === 'native' || m === 'auto' || m === 'google' ? m : 'auto';
     }
 
     // Per-browser override (set via the in-room picker) wins over the server UI_LANGUAGE.
     function resolveLang() {
         const override = getOverride();
-        if (override && (override === 'en' || LANG_DISPLAY[override])) return override;
+        if (override && LANG_DISPLAY[normalizeLang(override)]) return normalizeLang(override);
         return configLang();
+    }
+
+    function updateLanguageControls(failed = false) {
+        document.querySelectorAll('[data-i18n-select]').forEach((select) => {
+            if (![...select.options].some((option) => option.value === state.lang)) {
+                const info = LANG_DISPLAY[state.lang];
+                const option = document.createElement('option');
+                option.value = state.lang;
+                option.textContent = info ? `${info.flag} ${info.name}` : state.lang;
+                select.appendChild(option);
+            }
+            select.value = state.lang;
+        });
+        document.querySelectorAll('[data-i18n-error]').forEach((message) => {
+            message.textContent = failed ? '语言加载失败，请重试 / Unable to load language. Please try again.' : '';
+        });
     }
 
     // In-room language picker (human-translated languages + English). Switches live without reload.
     function renderLanguageSelect(current) {
-        const container = document.getElementById('tabLanguages');
-        if (!container || document.getElementById('i18nLanguageSelect')) return;
+        const containers = document.querySelectorAll('#tabLanguages, [data-language-picker]');
+        containers.forEach((container, index) => renderPicker(container, current, index));
+    }
+
+    function renderPicker(container, current, index) {
+        if (container.querySelector('[data-i18n-select]')) return;
         const select = document.createElement('select');
-        select.id = 'i18nLanguageSelect';
-        select.className = 'form-select text-light bg-dark notranslate';
-        select.style.cssText = 'max-width:280px;margin-top:4px;';
+        select.id = container.id === 'tabLanguages' ? 'i18nLanguageSelect' : `pageLanguageSelect${index}`;
+        select.dataset.i18nSelect = '';
+        select.className = 'language-select notranslate';
+        select.setAttribute('aria-label', 'Language / 语言');
+        const pagePicker = container.hasAttribute('data-language-picker');
 
         let matched = false;
         for (const code of Object.keys(LANG_DISPLAY)) {
+            if (pagePicker && code !== 'en' && code !== 'zh' && code !== current) continue;
             const info = LANG_DISPLAY[code];
             const opt = document.createElement('option');
             opt.value = code;
@@ -443,13 +511,8 @@
             const chosen = select.value;
             // Machine-translated (non-native) languages need a page load for Google; native/English switch live.
             const needsGoogle = chosen !== 'en' && !LANG_DISPLAY[chosen];
-            if (state.googleActive || needsGoogle) {
-                try {
-                    if (chosen === configLang()) localStorage.removeItem(OVERRIDE_KEY);
-                    else localStorage.setItem(OVERRIDE_KEY, chosen);
-                } catch (e) {
-                    console.warn('i18n: cannot persist language choice', e.message);
-                }
+            if (needsGoogle) {
+                persistLanguage(chosen);
                 location.reload();
                 return;
             }
@@ -460,6 +523,11 @@
         const title = container.querySelector('.title');
         if (title) title.insertAdjacentElement('afterend', select);
         else container.appendChild(select);
+        const error = document.createElement('span');
+        error.dataset.i18nError = '';
+        error.className = 'language-error notranslate';
+        error.setAttribute('role', 'status');
+        container.appendChild(error);
     }
 
     // In 'google' mode the Google combo is the switcher, so reveal it in the Language tab
@@ -474,17 +542,7 @@
     // ####################################################
 
     function whenBrandReady() {
-        return new Promise((resolve) => {
-            let settled = false;
-            const finish = () => {
-                if (settled) return;
-                settled = true;
-                resolve();
-            };
-            document.addEventListener('brand:ready', finish, { once: true });
-            // Fallback in case brand is already resolved or Brand.js is absent.
-            setTimeout(finish, 2000);
-        });
+        return window.brandReady || Promise.resolve();
     }
 
     function whenDomReady() {
@@ -532,21 +590,12 @@
 
         await whenDomReady();
 
-        if (state.native) {
-            // Native human translation: hooks, static pass, picker, observer.
-            installHooks();
-            applyStatic();
-            renderLanguageSelect(lang);
-            installObserver();
-        } else if (mode === 'google' || state.googleActive) {
-            // Google machine translation is the switcher (default/backward-compatible) → reveal its combo.
-            revealGoogleWidget();
-        } else {
-            // 'native'/'auto' mode with English (or no native file): native picker only.
-            installHooks();
-            renderLanguageSelect(lang);
-            installObserver();
-        }
+        installHooks();
+        applyStatic();
+        renderLanguageSelect(lang);
+        installObserver();
+        if (googleAllowed) revealGoogleWidget();
+        document.dispatchEvent(new CustomEvent('i18n:changed', { detail: { lang: state.lang } }));
 
         return state.native;
     })();

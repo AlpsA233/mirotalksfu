@@ -38,6 +38,7 @@ const buckets = {
     labels: new Set(),
     dialogs: new Set(),
     toasts: new Set(),
+    pages: new Set(),
 };
 
 function decodeEntities(str) {
@@ -115,7 +116,11 @@ function seedCuratedKeys() {
     const english = JSON.parse(fs.readFileSync(OUT_FILE, 'utf8'));
     for (const [namespace, entries] of Object.entries(english)) {
         if (!buckets[namespace] || !entries || typeof entries !== 'object') continue;
-        for (const key of Object.keys(entries)) add(namespace, key);
+        for (const key of Object.keys(entries)) {
+            // Entry-page copy includes brand titles and long descriptions curated by hand.
+            if (namespace === 'pages') buckets.pages.add(key);
+            else add(namespace, key);
+        }
     }
 }
 

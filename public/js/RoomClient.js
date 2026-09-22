@@ -7106,7 +7106,7 @@ class RoomClient {
                     ${positionFirst}
                 </div>
                 <div class="message ${messageClass}">
-                    <span class="text-start" id="message-${chatMessagesId}"></span>
+                    <span class="text-start" id="message-${chatMessagesId}" translate="no"></span>
                     <div class="message-reactions"></div>
                     <hr/>
                     <div class="about-buttons mt5">

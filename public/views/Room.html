@@ -139,6 +139,7 @@
         <script defer src="../js/RoomTemplate.js"></script>
         <script defer src="../js/RoomClient.js"></script>
         <script defer src="../js/Room.js"></script>
+        <link rel="stylesheet" href="/css/I18n.css" />
     </head>
     <body>
         <noscript>You need to enable JavaScript to run this app.</noscript>
@@ -185,6 +186,7 @@
 
         <section>
             <div id="initUser" class="init-user hidden">
+                <div class="language-picker" data-language-picker></div>
                 <div id="initVideoContainer" class="init-video-container">
                     <video id="initVideo" playsinline="true" autoplay="" class="mirror"></video>
                     <div id="initVideoLoader" class="init-video-loader">
@@ -3300,7 +3302,7 @@ Note</textarea>
             <div class="breakout-popup-summary-row">
                 <span class="breakout-popup-summary-room">
                     <i data-template-attr-class="roomIconClass"></i>
-                    <span data-template-text="roomName"></span>
+                    <span data-template-text="roomName" translate="no"></span>
                 </span>
                 <span class="breakout-popup-summary-count">
                     <i data-template-attr-class="countIconClass"></i>
@@ -3367,7 +3369,7 @@ Note</textarea>
             <div class="breakout-participant-row">
                 <div class="breakout-participant-info">
                     <img data-template-attr-src="avatarSrc" alt="avatar" class="breakout-peer-avatar" />
-                    <span class="breakout-peer-name" data-template-text="peerName"></span>
+                    <span class="breakout-peer-name" data-template-text="peerName" translate="no"></span>
                 </div>
                 <select
                     class="breakout-room-select"
@@ -3391,7 +3393,7 @@ Note</textarea>
                     <div class="breakout-popup-copy">
                         <p class="breakout-popup-eyebrow">Presenter assist</p>
                         <p class="breakout-popup-message">
-                            <strong data-template-text="peerName"></strong> in
+                            <strong data-template-text="peerName" translate="no"></strong> in
                             <strong data-template-text="roomLabel"></strong> is asking for help.
                         </p>
                     </div>

@@ -12,6 +12,11 @@ const statRooms = document.getElementById('statRooms');
 const statPeers = document.getElementById('statPeers');
 
 let allRooms = [];
+const roomText = (source, count) => window.i18n?.t(source, 'pages', { count }) || source.replace('{count}', count);
+document.addEventListener('i18n:changed', () => {
+    updateStats(allRooms);
+    handleSearch();
+});
 
 searchInput.addEventListener('input', handleSearch);
 refreshBtn.addEventListener('click', () => {
@@ -66,7 +71,7 @@ function updateStats(rooms) {
     const totalPeers = rooms.reduce((sum, r) => sum + r.peers, 0);
     statRooms.textContent = rooms.length;
     statPeers.textContent = totalPeers;
-    roomCountBadge.textContent = rooms.length === 1 ? '1 room' : `${rooms.length} rooms`;
+    roomCountBadge.textContent = roomText(rooms.length === 1 ? '{count} room' : '{count} rooms', rooms.length);
 }
 
 async function fetchRooms() {
@@ -98,7 +103,7 @@ function renderRooms(rooms) {
                 return `
             <div class="room-card">
                 <div class="room-card-header">
-                    <div class="room-title">
+                    <div class="room-title" translate="no">
                         <i class="fa-solid fa-door-open"></i>${id}
                     </div>
                     <div class="peer-badge">
@@ -109,7 +114,7 @@ function renderRooms(rooms) {
                 <div class="room-card-footer">
                     <div class="peer-status">
                         <span class="dot"></span>
-                        ${peers} ${peers === 1 ? 'peer' : 'peers'} connected
+                        ${escapeHtml(roomText(peers === 1 ? '{count} peer connected' : '{count} peers connected', peers))}
                     </div>
                     <a href="${join}" class="join-btn" target="_blank" rel="noopener noreferrer">
                         <i class="fa-solid fa-arrow-right-to-bracket"></i> Join

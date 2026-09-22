@@ -1207,7 +1207,7 @@ module.exports = {
 
             app: {
                 language: process.env.UI_LANGUAGE || 'en',
-                translationMode: process.env.UI_TRANSLATION_MODE || 'google', // auto (native else Google) | native (no Google) | google (default, always Google)
+                translationMode: process.env.UI_TRANSLATION_MODE || 'auto', // auto (default, native else Google) | native (no Google) | google (always Google)
                 name: process.env.APP_NAME || 'MiroTalk SFU',
                 title:
                     process.env.APP_TITLE ||

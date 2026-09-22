@@ -1,0 +1,70 @@
+.language-picker {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.site-header-inner > .language-picker {
+    order: 1;
+}
+
+.language-select {
+    box-sizing: border-box;
+    width: auto;
+    max-width: 100%;
+    min-height: 40px;
+    padding: 8px 12px;
+    border: 1px solid #667085;
+    border-radius: 8px;
+    background: #1c2230;
+    color: #f5f7fa;
+    font:
+        500 14px/1.5 system-ui,
+        sans-serif;
+    cursor: pointer;
+}
+
+.language-select:focus-visible {
+    outline: 2px solid #85b7ff;
+    outline-offset: 3px;
+}
+
+.language-error {
+    display: block;
+    max-width: 280px;
+    color: #fda4af;
+    font:
+        13px/1.5 system-ui,
+        sans-serif;
+}
+
+.language-error:empty {
+    display: none;
+}
+
+#tabLanguages .language-select {
+    display: block;
+    margin-top: 4px;
+}
+
+#initUser > .language-picker {
+    justify-content: flex-end;
+    margin-bottom: 12px;
+}
+
+.cr-header > .language-picker {
+    margin-right: 16px;
+}
+
+@media (max-width: 480px) {
+    .cr-header {
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .cr-header > .language-picker {
+        margin-right: 0;
+    }
+}

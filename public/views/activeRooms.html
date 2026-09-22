@@ -21,6 +21,9 @@
         <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" />
         <link rel="stylesheet" type="text/css" href="../css/ActiveRooms.css" />
+        <script defer src="/js/Brand.js"></script>
+        <script defer src="/js/I18n.js"></script>
+        <link rel="stylesheet" href="/css/I18n.css" />
     </head>
     <body>
         <div class="container">
@@ -30,6 +33,7 @@
                     <h1>Active Rooms</h1>
                     <span class="room-count-badge" id="roomCountBadge">0 rooms</span>
                 </div>
+                <div class="language-picker" data-language-picker></div>
                 <button id="refresh-btn" class="refresh-btn" title="Refresh">
                     <i class="fa-solid fa-arrows-rotate"></i>
                 </button>
