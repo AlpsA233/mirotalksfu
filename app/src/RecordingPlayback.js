@@ -12,6 +12,9 @@ const run = promisify(execFile);
 function playbackViews(meeting) {
     const peers = new Map();
     for (const track of meeting.tracks) {
+        // Failed segments stay in the archive metadata, but must not prevent
+        // playback of usable segments captured before/after a recovery.
+        if (['failed', 'incomplete'].includes(track.state) && !track.playback_path) continue;
         const key = track.socket_id || track.id;
         if (!peers.has(key)) peers.set(key, { name: track.peer_name, tracks: [] });
         peers.get(key).tracks.push(track);

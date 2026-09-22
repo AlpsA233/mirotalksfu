@@ -68,6 +68,17 @@ describe('participant playback', () => {
             false
         );
     });
+    it('plays surviving recovery segments while retaining their original time offsets', () => {
+        const failed = { ...track('lost', 'audio'), state: 'incomplete', playback_path: null };
+        const recovered = track('recovered', 'audio', 'alice', 4000);
+        const view = playbackViews({ tracks: [track('before', 'audio'), failed, recovered] })[0];
+        assert.equal(view.ready, true);
+        assert.deepEqual(
+            view.sources.map((item) => item.id),
+            ['before', 'recovered']
+        );
+        assert.equal(view.sources[1].started_at, 4000);
+    });
     it('invalidates cached playback when tracks change without exposing source paths', () => {
         const meeting = { tracks: [track('v', 'video'), track('a', 'audio')] };
         const before = describeViews(meeting)[0];

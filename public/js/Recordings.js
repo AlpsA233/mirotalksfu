@@ -114,6 +114,7 @@
             recording: ['录制中', 'processing'],
             finalizing: ['整理中', 'processing'],
             failed: ['需关注', 'failed'],
+            incomplete: ['不完整', 'failed'],
         };
         const [label, css] = states[meeting.state] || ['待处理', 'processing'];
         return el('span', `status-pill ${css}`, label);
@@ -466,12 +467,11 @@
             $('deleteMeeting').disabled = !current.can_delete;
             $('deleteMeeting').title = current.can_delete ? '删除本场录像' : '正在录制或处理，完成后可删除';
             $('compose').disabled = !current.can_delete || !current.views.some((view) => view.ready);
-            $('composeLabel').textContent =
-                current.composition_state === 'running'
-                    ? '正在生成…'
-                    : current.composition_path
-                      ? '重新生成会议总览'
-                      : '生成会议总览';
+            $('composeLabel').textContent = ['queued', 'running'].includes(current.composition_state)
+                ? '正在生成…'
+                : current.composition_path
+                  ? '重新生成会议总览'
+                  : '生成会议总览';
         }
         updateAngles();
     }

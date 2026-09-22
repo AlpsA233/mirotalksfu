@@ -70,6 +70,7 @@ class RecordingStore {
         `);
         this.ensureColumn('recording_tracks', 'codec', 'TEXT');
         this.ensureColumn('recording_tracks', 'resolution', 'TEXT');
+        this.ensureColumn('recording_meetings', 'composition_primary_track_id', 'TEXT');
     }
 
     ensureColumn(table, column, type) {
@@ -115,6 +116,7 @@ class RecordingStore {
             'composition_state',
             'composition_path',
             'composition_updated_at',
+            'composition_primary_track_id',
         ];
         const entries = Object.entries(changes).filter(([key]) => allowed.includes(key));
         if (!entries.length) return this.getMeeting(id);
@@ -172,12 +174,26 @@ class RecordingStore {
         return meetings.map((meeting) => ({ ...meeting, tracks: this.listTracks(meeting.id) }));
     }
 
+    listUnfinishedMeetings() {
+        // Recovery must include older work, independently of library pagination.
+        return this.db
+            .prepare(
+                `SELECT * FROM recording_meetings m
+            WHERE state IN ('recording', 'finalizing')
+               OR composition_state IN ('queued', 'running')
+               OR EXISTS (SELECT 1 FROM recording_tracks t WHERE t.meeting_id = m.id
+                   AND t.state IN ('starting', 'recording', 'recovering', 'finalizing'))
+            ORDER BY started_at`
+            )
+            .all();
+    }
+
     createTrack(track) {
         this.db
             .prepare(
                 `INSERT INTO recording_tracks
-                 (id, meeting_id, socket_id, peer_name, kind, media_type, producer_id, codec, resolution, started_at, state, timeline_json)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                 (id, meeting_id, socket_id, peer_name, kind, media_type, producer_id, codec, resolution, started_at, state, raw_path, timeline_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             )
             .run(
                 track.id,
@@ -191,6 +207,7 @@ class RecordingStore {
                 track.resolution || null,
                 track.startedAt,
                 track.state || 'starting',
+                track.rawRelativePath || null,
                 JSON.stringify(track.timeline || [])
             );
         return this.getTrack(track.id);

@@ -189,6 +189,12 @@ Open [https://localhost:3010](https://localhost:3010) - done!
 
 Set `MANAGED_RECORDING_ENABLED=true`, a strong `MANAGED_RECORDING_ADMIN_PASSWORD`, and persistent mounts for `/data/recordings` and `/data/state`. Open `/recordings` to enable recording for **new** meetings and browse playback. `/data/recordings` may be an OS-mounted NAS path; keep `/data/state` local to the host because SQLite WAL is not suitable for a network filesystem. Independent tracks are available first; an administrator can generate the 1080p combined video when needed.
 
+A recording failure starts a fixed recovery window (30 seconds by default). Retries keep existing media in separate segments; the window clears only after the new recorder reports advancing media timestamps and writes more bytes. A timeout pauses the meeting's producers and invokes room termination. Silence or a user pause alone does not start a failure window.
+
+Ended recordings remain `finalizing` until their playback files are ready. File or conversion errors produce an `incomplete` status and retain the available source media. On startup, unfinished tracks and queued/running compositions resume from SQLite metadata, including files created by older versions. Recovery runs in the background, preserves the previously published composition until its replacement succeeds, and marks interrupted live meetings incomplete even when their surviving files are playable. Derived participant views are rebuilt on their next playback request if needed.
+
+Run lifecycle regressions with `npx mocha tests/test-RecordingRecovery.js tests/test-RecordingPlayback.js`. For real RTP/FFmpeg recovery, run `node tests/integration/recording-recovery.cjs` with `FFMPEG_PATH` and `FFPROBE_PATH` set to your installed executables.
+
 </details>
 
 <details>

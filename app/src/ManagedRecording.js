@@ -144,6 +144,7 @@ class ManagedRecording extends EventEmitter {
         this.meetingJobs = new Map();
         this.deletingMeetings = new Set();
         this.playbackJobs = new Map();
+        this.compositionJobs = new Map();
     }
 
     async initialize() {
@@ -154,6 +155,14 @@ class ManagedRecording extends EventEmitter {
         this.store = new RecordingStore(this.config.dbPath);
         if (this.store.getSetting('enabled', null) === null)
             this.store.setSetting('enabled', this.config.defaultEnabled);
+        // Reserve every pending meeting against deletion immediately, but
+        // recover them serially so a restart cannot spawn an unbounded number
+        // of media converters at once.
+        let recoveryQueue = Promise.resolve();
+        for (const meeting of this.store.listUnfinishedMeetings()) {
+            const recover = () => this.recoverUnfinishedMeeting(meeting);
+            recoveryQueue = this.startBackground(recoveryQueue.then(recover, recover), meeting.id);
+        }
         return true;
     }
 
@@ -197,7 +206,7 @@ class ManagedRecording extends EventEmitter {
             tracks: new Map(),
             producerGates: new Map(),
             ending: null,
-            recoveryTimers: new Map(),
+            recoveries: new Map(),
         };
         this.meetings.set(meeting.id, meeting);
         if (required) {
@@ -329,8 +338,6 @@ class ManagedRecording extends EventEmitter {
             consumer: null,
             transport: null,
             intentionalStop: false,
-            failedAt: null,
-            recoveryDeadline: null,
         };
     }
 
@@ -352,7 +359,12 @@ class ManagedRecording extends EventEmitter {
     }
 
     async startTrack(track) {
+        const ensureActive = () => {
+            if (track.intentionalStop || track.meeting.ending || track.meeting.state !== 'recording')
+                throw new Error('Recording stopped during startup');
+        };
         await fsp.mkdir(path.dirname(track.partialPath), { recursive: true });
+        ensureActive();
         const { rtpPort, rtcpPort } = this.allocatePorts();
         track.rtcpPort = rtcpPort;
         const transport = await track.meeting.room.router.createPlainTransport({
@@ -361,18 +373,27 @@ class ManagedRecording extends EventEmitter {
             comedia: false,
         });
         track.transport = transport;
+        ensureActive();
         const consumer = await transport.consume({
             producerId: track.producer.id,
             rtpCapabilities: track.meeting.room.router.rtpCapabilities,
             paused: true,
         });
         track.consumer = consumer;
+        ensureActive();
         track.recordingSsrc = consumer.rtpParameters.encodings[0]?.ssrc;
         const sdpPath = `${track.partialPath}.sdp`;
+        track.sdpPath = sdpPath;
         await fsp.writeFile(sdpPath, this.createSdp(consumer, rtpPort, rtcpPort));
+        ensureActive();
 
         const args = [
             '-nostdin',
+            '-n',
+            '-progress',
+            'pipe:3',
+            '-stats_period',
+            '1',
             '-loglevel',
             'warning',
             '-protocol_whitelist',
@@ -387,21 +408,29 @@ class ManagedRecording extends EventEmitter {
             '0:0',
             '-c',
             'copy',
+            '-flush_packets',
+            '1',
             '-f',
             'matroska',
             track.partialPath,
         ];
-        const processInfo = await waitForSpawn(this.config.ffmpegPath, args);
+        const processInfo = await waitForSpawn(this.config.ffmpegPath, args, {
+            stdio: ['ignore', 'ignore', 'pipe', 'pipe'],
+        });
         track.child = processInfo.child;
         track.getStderr = processInfo.getStderr;
         track.sdpPath = sdpPath;
         track.child.once('close', (code, signal) => this.handleTrackExit(track, code, signal));
+        this.observeCaptureProgress(track, track.child.stdio[3]);
+        ensureActive();
         transport.once('close', () => {
             if (!track.intentionalStop) this.scheduleRecovery(track, new Error('Recording transport closed'));
         });
-        consumer.once('producerclose', () => this.stopTrack(track, 'producer_closed'));
+        consumer.once('producerclose', () => this.stopTrack(track, 'producer_closed').catch(() => {}));
         await transport.connect({ ip: LOOPBACK, port: rtpPort, rtcpPort });
+        ensureActive();
         await consumer.resume();
+        ensureActive();
         track.state = 'recording';
         if (track.gate) {
             track.gate.ready = true;
@@ -437,54 +466,160 @@ class ManagedRecording extends EventEmitter {
         this.scheduleRecovery(track, new Error(`FFmpeg exited (${code ?? 'null'}${signal ? `, ${signal}` : ''})`));
     }
 
+    observeCaptureProgress(track, stream) {
+        let buffer = '',
+            previous = null,
+            sample = {};
+        stream.on('data', (chunk) => {
+            buffer += chunk.toString();
+            let newline;
+            while ((newline = buffer.indexOf('\n')) !== -1) {
+                const line = buffer.slice(0, newline).trim();
+                buffer = buffer.slice(newline + 1);
+                const [key, value] = line.split('=');
+                sample[key] = value;
+                if (key !== 'progress') continue;
+                const current = { bytes: Number(sample.total_size), time: Number(sample.out_time_us) };
+                // A spawn or a Matroska header is not evidence of healthy capture.
+                // Require advancing media timestamps AND bytes flushed to the file.
+                if (
+                    value === 'continue' &&
+                    previous &&
+                    current.time > previous.time &&
+                    current.bytes > previous.bytes
+                ) {
+                    const baseline = previous.bytes;
+                    fsp.stat(track.partialPath)
+                        .then((stat) => {
+                            if (stat.size > baseline) this.completeRecovery(track);
+                        })
+                        .catch(() => {});
+                }
+                previous = current;
+                sample = {};
+            }
+        });
+    }
+
+    clearRecovery(meeting, producerId) {
+        const recovery = meeting.recoveries.get(producerId);
+        if (!recovery) return;
+        clearTimeout(recovery.deadlineTimer);
+        clearTimeout(recovery.retryTimer);
+        meeting.recoveries.delete(producerId);
+    }
+
+    completeRecovery(track) {
+        const meeting = track.meeting;
+        const recovery = meeting.recoveries.get(track.producerId);
+        if (
+            !recovery ||
+            recovery.track !== track ||
+            recovery.needsRetry ||
+            track.intentionalStop ||
+            meeting.ending ||
+            meeting.state !== 'recording' ||
+            Date.now() >= recovery.deadline ||
+            track.child?.exitCode !== null ||
+            track.child?.signalCode !== null
+        )
+            return;
+        this.clearRecovery(meeting, track.producerId);
+        track.timeline.push({ type: 'recovered', at: Date.now(), offsetMs: Date.now() - meeting.startedAt });
+        this.store.updateTrack(track.id, {
+            state: 'recording',
+            failure_reason: null,
+            timeline_json: JSON.stringify(track.timeline),
+        });
+    }
+
     scheduleRecovery(track, error) {
         const meeting = track.meeting;
         if (track.intentionalStop || meeting.ending || meeting.state !== 'recording') return;
         this.pauseProducerForRecording(track);
-        if (!track.failedAt) {
-            track.failedAt = Date.now();
-            track.recoveryDeadline = track.failedAt + this.config.recoveryMs;
-            track.timeline.push({
-                type: 'failure',
-                at: track.failedAt,
-                offsetMs: track.failedAt - meeting.startedAt,
-                reason: error.message,
-            });
-            this.store.updateTrack(track.id, {
-                state: 'recovering',
-                failure_reason: error.message,
-                timeline_json: JSON.stringify(track.timeline),
-            });
+        let recovery = meeting.recoveries.get(track.producerId);
+        if (!recovery) {
+            recovery = { deadline: Date.now() + this.config.recoveryMs, track };
+            meeting.recoveries.set(track.producerId, recovery);
+            // This timer is independent of retries and remains active even if
+            // a storage/transport operation never resolves.
+            recovery.deadlineTimer = setTimeout(() => {
+                this.failMeeting(meeting, `Recording could not recover: ${recovery.error.message}`).catch(() => {});
+            }, this.config.recoveryMs);
+            recovery.deadlineTimer.unref?.();
         }
-        if (Date.now() >= track.recoveryDeadline) {
-            this.failMeeting(meeting, `Recording could not recover: ${error.message}`);
-            return;
-        }
-        if (meeting.recoveryTimers.has(track.id)) return;
-        const timer = setTimeout(async () => {
-            meeting.recoveryTimers.delete(track.id);
-            try {
-                await this.teardownTrackTransport(track);
-                await this.startTrack(track);
-                track.failedAt = null;
-                track.recoveryDeadline = null;
-                track.timeline.push({ type: 'recovered', at: Date.now(), offsetMs: Date.now() - meeting.startedAt });
-                this.store.updateTrack(track.id, {
-                    state: 'recording',
-                    failure_reason: null,
-                    timeline_json: JSON.stringify(track.timeline),
-                });
-            } catch (restartError) {
-                this.scheduleRecovery(track, restartError);
-            }
+        recovery.error = error;
+        recovery.needsRetry = true;
+        track.timeline.push({
+            type: 'failure',
+            at: Date.now(),
+            offsetMs: Date.now() - meeting.startedAt,
+            reason: error.message,
+        });
+        this.store.updateTrack(track.id, {
+            state: 'recovering',
+            failure_reason: error.message,
+            timeline_json: JSON.stringify(track.timeline),
+        });
+        if (recovery.retryTimer || recovery.restarting || Date.now() >= recovery.deadline) return;
+        recovery.retryTimer = setTimeout(() => {
+            recovery.retryTimer = null;
+            this.startBackground(this.retryTrack(recovery), meeting.id);
         }, this.config.recoveryIntervalMs);
-        timer.unref?.();
-        meeting.recoveryTimers.set(track.id, timer);
+        recovery.retryTimer.unref?.();
+    }
+
+    async retryTrack(recovery) {
+        const previous = recovery.track;
+        const meeting = previous.meeting;
+        recovery.restarting = true;
+        recovery.needsRetry = false;
+        try {
+            // Seal the old segment before creating a new file. Never overwrite
+            // media captured before the failure, even when a remux fails.
+            await this.stopTrack(previous, 'recording_failure', { preserveRecovery: true });
+            if (
+                meeting.ending ||
+                meeting.state !== 'recording' ||
+                previous.producer.closed ||
+                meeting.recoveries.get(previous.producerId) !== recovery
+            )
+                return;
+            const track = this.createTrackState(
+                meeting,
+                { id: previous.socketId, peer_name: previous.peerName },
+                previous.producer,
+                previous.kind,
+                previous.mediaType
+            );
+            track.gate = previous.gate;
+            track.gate.track = track;
+            meeting.tracks.set(track.id, track);
+            this.store.createTrack(track);
+            recovery.track = track;
+            await this.startTrack(track);
+            this.store.updateTrack(track.id, { state: 'recovering' });
+        } catch (error) {
+            recovery.error = error;
+            recovery.needsRetry = true;
+            // A deadline may have ended the room while startup was awaiting an
+            // external operation. Clean up any resources created after teardown.
+            if (meeting.ending || meeting.state !== 'recording') {
+                recovery.track.intentionalStop = true;
+                await stopChild(recovery.track.child);
+                await this.teardownTrackTransport(recovery.track).catch(() => {});
+            }
+        } finally {
+            recovery.restarting = false;
+            if (recovery.needsRetry) this.scheduleRecovery(recovery.track, recovery.error);
+        }
     }
 
     async failMeeting(meeting, reason) {
         if (meeting.ending || meeting.state === 'failed') return;
         meeting.state = 'failed';
+        for (const track of meeting.tracks.values()) this.pauseProducerForRecording(track);
+        for (const producerId of meeting.recoveries.keys()) this.clearRecovery(meeting, producerId);
         this.store.updateMeeting(meeting.id, { state: 'failed', failure_reason: reason, ended_at: Date.now() });
         this.emit('status', { meetingId: meeting.id, state: 'failed', reason });
         await this.hooks.onFatal?.(meeting.room, reason);
@@ -498,7 +633,8 @@ class ManagedRecording extends EventEmitter {
     async releaseProducer(room, producerId) {
         const meeting = this.meetings.get(room.getSessionId());
         if (!meeting) return;
-        const track = [...meeting.tracks.values()].find((item) => item.producerId === producerId);
+        this.clearRecovery(meeting, producerId);
+        const track = meeting.producerGates.get(producerId)?.track;
         if (track) await this.stopTrack(track, 'producer_closed');
         meeting.producerGates.delete(producerId);
     }
@@ -512,42 +648,143 @@ class ManagedRecording extends EventEmitter {
         track.sdpPath = null;
     }
 
-    async stopTrack(track, reason = 'stopped') {
+    async stopTrack(track, reason = 'stopped', { preserveRecovery = false } = {}) {
         if (track.stopping) return track.stopping;
         track.stopping = (async () => {
             track.intentionalStop = true;
-            const timer = track.meeting.recoveryTimers.get(track.id);
-            if (timer) clearTimeout(timer);
-            track.meeting.recoveryTimers.delete(track.id);
+            if (!preserveRecovery) this.clearRecovery(track.meeting, track.producerId);
             const endedAt = Date.now();
             track.timeline.push({ type: reason, at: endedAt, offsetMs: endedAt - track.meeting.startedAt });
-            await finishRtpInput(track);
-            await stopChild(track.child);
-            await this.teardownTrackTransport(track);
             try {
-                await fsp.rename(track.partialPath, track.rawPath);
+                await finishRtpInput(track);
+                await stopChild(track.child);
+                await this.teardownTrackTransport(track);
+                await this.finalizeTrackMedia(track, endedAt);
             } catch (error) {
-                if (error.code !== 'ENOENT') throw error;
+                this.markTrackIncomplete(track, error, endedAt);
             }
-            const stats = await this.fileStats(track.rawPath);
-            track.state = 'finalizing';
-            this.store.updateTrack(track.id, {
-                ended_at: endedAt,
-                state: 'finalizing',
-                raw_path: track.rawRelativePath,
-                bytes: stats.size,
-                checksum: stats.checksum,
-                timeline_json: JSON.stringify(track.timeline),
-            });
-            this.startBackground(
-                this.generatePlayback(track).catch((error) => {
-                    if (this.store)
-                        this.store.updateTrack(track.id, { state: 'incomplete', failure_reason: error.message });
-                }),
-                track.meeting.id
-            );
+            this.refreshMeetingState(track.meetingId);
         })();
         return track.stopping;
+    }
+
+    markTrackIncomplete(track, error, endedAt = Date.now()) {
+        track.state = 'incomplete';
+        this.store.updateTrack(track.id, {
+            state: 'incomplete',
+            ended_at: endedAt,
+            failure_reason: error.message,
+            timeline_json: JSON.stringify(track.timeline),
+        });
+    }
+
+    async finalizeTrackMedia(track, endedAt) {
+        // A previous attempt may already have sealed the raw file. Never
+        // replace it with a partial left over from a crashed process.
+        try {
+            await fsp.access(track.rawPath);
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+            await fsp.rename(track.partialPath, track.rawPath);
+        }
+        const stats = await this.fileStats(track.rawPath);
+        if (!stats.size) throw new Error('Recording contains no media');
+        track.state = 'finalizing';
+        this.store.updateTrack(track.id, {
+            ended_at: endedAt,
+            state: 'finalizing',
+            raw_path: track.rawRelativePath,
+            bytes: stats.size,
+            checksum: stats.checksum,
+            timeline_json: JSON.stringify(track.timeline),
+        });
+        track.finalization = this.startBackground(
+            this.generatePlayback(track)
+                .catch((error) => this.markTrackIncomplete(track, error, endedAt))
+                .then(() => this.refreshMeetingState(track.meetingId)),
+            track.meetingId
+        );
+    }
+
+    refreshMeetingState(meetingId) {
+        const active = this.meetings.get(meetingId);
+        if (active && active.state === 'recording') return;
+        const meeting = this.store.getMeeting(meetingId);
+        if (!meeting || ['failed', 'incomplete'].includes(meeting.state)) return;
+        const tracks = this.store.listTracks(meetingId);
+        const pending = tracks.some((track) =>
+            ['starting', 'recording', 'recovering', 'finalizing'].includes(track.state)
+        );
+        const errors = tracks.filter((track) => track.state !== 'ready');
+        const state = pending ? 'finalizing' : errors.length ? 'incomplete' : 'ready';
+        const failure = errors.find((track) => track.failure_reason);
+        this.store.updateMeeting(meetingId, { state, failure_reason: failure?.failure_reason || null });
+        if (active) active.state = state;
+        if (meeting.state !== state) this.emit('status', { meetingId, state });
+    }
+
+    async recoverUnfinishedMeeting(meeting) {
+        const interrupted = meeting.state === 'recording';
+        if (!['failed', 'incomplete'].includes(meeting.state)) {
+            this.store.updateMeeting(meeting.id, {
+                state: interrupted ? 'incomplete' : 'finalizing',
+                ended_at: meeting.ended_at || Date.now(),
+                failure_reason: interrupted
+                    ? 'Recording interrupted by server restart; recovered media may be incomplete'
+                    : null,
+            });
+        }
+        try {
+            const pending = this.store
+                .listTracks(meeting.id)
+                .filter((track) => ['starting', 'recording', 'recovering', 'finalizing'].includes(track.state));
+            for (const saved of pending) {
+                // Older versions only saved raw_path at stop time. Their file
+                // name is deterministic from the persisted peer/type/track ID.
+                const rawRelativePath =
+                    saved.raw_path ||
+                    path.join('tracks', `${safeName(saved.peer_name)}-${safeName(saved.media_type)}-${saved.id}.mkv`);
+                const rawPath = path.join(this.meetingDir(meeting), rawRelativePath);
+                const track = {
+                    id: saved.id,
+                    meetingId: meeting.id,
+                    meeting,
+                    rawRelativePath,
+                    rawPath,
+                    partialPath: `${rawPath}.partial`,
+                    codecMimeType: (saved.codec || '').toLowerCase(),
+                    timeline: JSON.parse(saved.timeline_json || '[]'),
+                };
+                let endedAt = saved.ended_at;
+                try {
+                    if (!endedAt) {
+                        const stat = await fsp.stat(rawPath).catch((error) => {
+                            if (error.code !== 'ENOENT') throw error;
+                            return fsp.stat(track.partialPath);
+                        });
+                        endedAt = Math.max(saved.started_at, Math.floor(stat.mtimeMs));
+                    }
+                    await this.finalizeTrackMedia(track, endedAt);
+                    await track.finalization;
+                } catch (error) {
+                    this.markTrackIncomplete(track, error, endedAt || saved.started_at);
+                }
+            }
+            if (!meeting.ended_at) {
+                const ends = this.store.listTracks(meeting.id).map((track) => track.ended_at || track.started_at);
+                this.store.updateMeeting(meeting.id, { ended_at: Math.max(meeting.started_at, ...ends) });
+            }
+            this.refreshMeetingState(meeting.id);
+            if (['queued', 'running'].includes(meeting.composition_state)) {
+                await this.queueComposition(meeting.id, meeting.composition_primary_track_id);
+            }
+        } catch (error) {
+            this.store.updateMeeting(meeting.id, {
+                state: meeting.state === 'failed' ? 'failed' : 'incomplete',
+                failure_reason: error.message,
+                ...(['queued', 'running'].includes(meeting.composition_state) ? { composition_state: 'failed' } : {}),
+            });
+        }
     }
 
     async fileStats(filePath) {
@@ -572,13 +809,17 @@ class ManagedRecording extends EventEmitter {
         const extension = webm ? 'webm' : 'mp4';
         const relativePath = path.join('playback', `${path.basename(track.rawRelativePath, '.mkv')}.${extension}`);
         const outputPath = path.join(this.meetingDir(track.meeting), relativePath);
+        const partialPath = outputPath.replace(/\.(webm|mp4)$/, '.partial.$1');
         await fsp.mkdir(path.dirname(outputPath), { recursive: true });
-        const args = ['-nostdin', '-y', '-loglevel', 'error', '-i', track.rawPath, '-c', 'copy', outputPath];
+        const args = ['-nostdin', '-y', '-loglevel', 'error', '-i', track.rawPath, '-c', 'copy', partialPath];
         const processInfo = await waitForSpawn(this.config.ffmpegPath, args);
         const exit = await waitForExit(processInfo.child);
         if (exit.code !== 0) throw new Error(`Playback remux failed: ${processInfo.getStderr() || exit.code}`);
+        if (!(await fsp.stat(partialPath)).size) throw new Error('Playback remux produced an empty file');
+        await fsp.rename(partialPath, outputPath);
         track.playbackRelativePath = relativePath;
-        this.store.updateTrack(track.id, { state: 'ready', playback_path: relativePath });
+        track.state = 'ready';
+        this.store.updateTrack(track.id, { state: 'ready', playback_path: relativePath, failure_reason: null });
     }
 
     startBackground(job, meetingId = null) {
@@ -600,20 +841,24 @@ class ManagedRecording extends EventEmitter {
         const meeting = this.meetings.get(room.getSessionId());
         if (!meeting || !meeting.required) return;
         if (meeting.ending) return meeting.ending;
-        meeting.ending = (async () => {
-            const failed = meeting.state === 'failed';
-            if (!failed) {
-                meeting.state = 'finalizing';
-                this.store.updateMeeting(meeting.id, { state: 'finalizing', ended_at: Date.now() });
-            }
-            await Promise.allSettled([...meeting.tracks.values()].map((track) => this.stopTrack(track, reason)));
-            if (!failed) {
-                meeting.state = 'ready';
-                this.store.updateMeeting(meeting.id, { state: 'ready', ended_at: Date.now() });
-            }
-            this.emit('status', { meetingId: meeting.id, state: meeting.state });
-            this.meetings.delete(meeting.id);
-        })();
+        meeting.ending = this.startBackground(
+            (async () => {
+                const failed = meeting.state === 'failed';
+                if (!failed) {
+                    meeting.state = 'finalizing';
+                    this.store.updateMeeting(meeting.id, { state: 'finalizing', ended_at: Date.now() });
+                }
+                for (const producerId of meeting.recoveries.keys()) this.clearRecovery(meeting, producerId);
+                const tracks = [...meeting.tracks.values()];
+                const results = await Promise.allSettled(tracks.map((track) => this.stopTrack(track, reason)));
+                results.forEach((result, index) => {
+                    if (result.status === 'rejected') this.markTrackIncomplete(tracks[index], result.reason);
+                });
+                this.meetings.delete(meeting.id);
+                this.refreshMeetingState(meeting.id);
+            })(),
+            meeting.id
+        );
         return meeting.ending;
     }
 
@@ -762,8 +1007,24 @@ class ManagedRecording extends EventEmitter {
     async queueComposition(meetingId, primaryTrackId = null) {
         if (!this.store) throw new Error('Managed recording is unavailable');
         if (this.deletingMeetings.has(meetingId)) throw new Error('录像正在删除中。');
-        const run = async () => this.composeMeeting(meetingId, primaryTrackId);
+        if (!this.store.getMeeting(meetingId)) throw new Error('Meeting not found');
+        if (this.compositionJobs.has(meetingId)) throw new Error('Composition is already queued or running');
+        this.store.updateMeeting(meetingId, {
+            composition_state: 'queued',
+            composition_primary_track_id: primaryTrackId || null,
+        });
+        const run = async () => {
+            try {
+                return await this.composeMeeting(meetingId, primaryTrackId);
+            } catch (error) {
+                this.store.updateMeeting(meetingId, { composition_state: 'failed' });
+                throw error;
+            } finally {
+                this.compositionJobs.delete(meetingId);
+            }
+        };
         this.compositionQueue = this.startBackground(this.compositionQueue.then(run, run), meetingId);
+        this.compositionJobs.set(meetingId, this.compositionQueue);
         return this.compositionQueue;
     }
 
@@ -771,10 +1032,10 @@ class ManagedRecording extends EventEmitter {
         const meeting = this.getMeeting(meetingId);
         if (!meeting) throw new Error('Meeting not found');
         const videos = meeting.tracks.filter(
-            (track) => track.kind === 'video' && track.raw_path && track.state !== 'failed'
+            (track) => track.kind === 'video' && track.raw_path && track.state === 'ready'
         );
         const audio = meeting.tracks.filter(
-            (track) => track.kind === 'audio' && track.raw_path && track.state !== 'failed'
+            (track) => track.kind === 'audio' && track.raw_path && track.state === 'ready'
         );
         if (!videos.length && !audio.length) throw new Error('No recorded media is available');
         this.store.updateMeeting(meetingId, { composition_state: 'running' });

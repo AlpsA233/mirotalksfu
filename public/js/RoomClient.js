@@ -806,7 +806,7 @@ class RoomClient {
             // ###################################################################################################
 
             if (room.managedRecording?.required) {
-                this.userLog('info', `${icons.recording} 此会议正在由服务器留存录制`, 'top-end');
+                this.userLog('info', `${icons.recording} 此会议正在由服务器留存录制`, 'top-end', 2000);
             }
 
             // Handle Room moderator rules
@@ -1339,9 +1339,9 @@ class RoomClient {
         this.socket.on('recordingAction', this.handleRecordingActionData);
         this.socket.on('managedRecordingStatus', (data) => {
             if (data?.state === 'recording') {
-                this.userLog('info', `${icons.recording} 此会议正在由服务器留存录制`, 'top-end');
+                this.userLog('info', `${icons.recording} 此会议正在由服务器留存录制`, 'top-end', 2000);
             } else if (data?.state === 'failed') {
-                this.userLog('error', `${icons.recording} 会议录制故障，会议将结束`, 'top-end');
+                this.userLog('error', `${icons.recording} 会议录制故障，会议将结束`, 'top-end', 2000);
             }
         });
         this.socket.on('endRTMP', this.handleEndRTMP);
