@@ -140,8 +140,10 @@
         <script defer src="../js/RoomClient.js"></script>
         <script defer src="../js/Room.js"></script>
         <link rel="stylesheet" href="/css/I18n.css" />
+        <meta name="color-scheme" content="light dark" />
+        <link rel="stylesheet" href="/css/DesignSystem.css?v=1" />
     </head>
-    <body>
+    <body data-ui="room">
         <noscript>You need to enable JavaScript to run this app.</noscript>
 
         <div
@@ -1894,7 +1896,7 @@
                         </div>
                         <br />
                         <select id="selectTheme" class="form-select text-light bg-dark">
-                            <option value="default">Default</option>
+                            <option value="default">Follow system</option>
                             <option value="dark">Dark</option>
                             <option value="grey">Grey</option>
                             <option value="green">Green</option>
@@ -1907,8 +1909,8 @@
                         </select>
                         <div id="themeCardsGrid" class="theme-cards-grid">
                             <div class="theme-card" data-theme="default" data-index="0">
-                                <i class="fa-solid fa-circle-dot"></i>
-                                <span>Default</span>
+                                <i class="fa-solid fa-circle-half-stroke"></i>
+                                <span>Follow system</span>
                             </div>
                             <div class="theme-card" data-theme="dark" data-index="1">
                                 <i class="fa-solid fa-moon"></i>

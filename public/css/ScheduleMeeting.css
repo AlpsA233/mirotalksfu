@@ -25,12 +25,12 @@
     gap: 6px;
     font-size: 13px;
     font-weight: 600;
-    color: rgba(255, 255, 255, 0.85);
+    color: var(--ui-ink);
 }
 
 .sch-icon {
     font-size: 12px;
-    color: rgba(59, 130, 246, 0.9);
+    color: var(--ui-accent);
 }
 
 .sch-required {
@@ -45,9 +45,9 @@
     margin: 0;
     box-sizing: border-box;
     border-radius: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    background: rgba(255, 255, 255, 0.06);
-    color: rgba(255, 255, 255, 0.92);
+    border: 1px solid var(--ui-line);
+    background: var(--ui-surface-2);
+    color: var(--ui-ink);
     font-size: 14px;
     font-family: inherit;
     outline: none;
@@ -57,27 +57,27 @@
 }
 
 .sch-input::placeholder {
-    color: rgba(255, 255, 255, 0.35);
+    color: var(--ui-subtle);
 }
 
 .sch-input:focus {
-    border-color: rgba(59, 130, 246, 0.6);
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+    border-color: var(--ui-accent);
+    outline: 3px solid var(--ui-focus);
 }
 
 .sch-hint {
     margin: 0;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.72);
+    color: var(--ui-muted);
 }
 
 /* Rounded Swal popup & buttons */
 .sch-popup {
-    border-radius: 14px !important;
+    border-radius: 24px !important;
 }
 
 .sch-btn {
-    border-radius: 8px !important;
+    border-radius: 999px !important;
 }
 
 /* Schedule Meeting Button (landing / newroom) */

@@ -29,8 +29,6 @@
         <meta property="og:url" content="{{OG_URL}}" />
 
         <!-- StyleSheet -->
-
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=IBM+Plex+Sans:400,600" />
         <link rel="stylesheet" type="text/css" href="../css/landing.css" />
         <link rel="stylesheet" type="text/css" href="../css/login.css" />
         <link rel="stylesheet" type="text/css" href="../css/Translate.css" />
@@ -76,14 +74,19 @@
         <!-- sweetalert -->
         <script defer src="https://cdn.jsdelivr.net/npm/sweetalert2@11.4.8"></script>
         <link rel="stylesheet" href="/css/I18n.css" />
+        <meta name="color-scheme" content="light dark" />
+        <link rel="stylesheet" href="/css/DesignSystem.css?v=1" />
     </head>
-    <body class="is-boxed has-animations">
+    <body data-ui="public" class="is-boxed has-animations">
         <div id="google_translate_element"></div>
 
         <div class="body-wrap">
             <header class="site-header reveal-from-top">
                 <div class="container">
                     <div class="site-header-inner">
+                        <nav class="site-nav" aria-label="Main navigation">
+                            <a href="/newroom">New meeting</a><a href="/recordings">Recordings</a>
+                        </nav>
                         <div class="language-picker" data-language-picker></div>
                         <div class="brand header-brand">
                             <h1 class="m-0">

@@ -1203,6 +1203,22 @@
         "{count} peers connected": "{count} 人已连接",
         "{count} peer connected": "{count} 人已连接",
         "Please allow the camera or microphone": "请允许访问摄像头或麦克风",
-        "access to use this app.": "以使用本应用。"
+        "access to use this app.": "以使用本应用。",
+        "A SPACE TO CONNECT": "为每一次相聚",
+        "A little closer.": "让交流，更近一点。",
+        "Wherever you are.": "无论身在何处。",
+        "A little closer.<br />Wherever you are.": "让交流，更近一点。<br />无论身在何处。",
+        "Clear video. Shared ideas. A space to be together, right in your browser.": "清晰通话，分享灵感。在浏览器中，轻松相聚。",
+        "One link.": "一个链接，",
+        "Everyone together.": "让彼此相聚。",
+        "One link.<br />Everyone together.": "一个链接，<br />让彼此相聚。",
+        "Your next conversation": "下一次交流，",
+        "starts here.": "从这里开始。",
+        "Your next conversation<br />starts here.": "下一次交流，<br />从这里开始。",
+        "New meeting": "开始会议",
+        "Recordings": "录像库",
+        "Main navigation": "主导航",
+        "Follow system": "跟随系统",
+        "Generate room name": "生成房间名称"
     }
 }

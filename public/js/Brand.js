@@ -47,10 +47,9 @@ let BRAND = {
         language: 'en',
         translationMode: 'auto',
         name: 'MiroTalk SFU',
-        title: 'MiroTalk SFU<br />Free browser based Real-time video calls.<br />Simple, Secure, Fast.',
-        description:
-            'Start your next video call with a single click. No download, plug-in, or login is required. Just get straight to talking, messaging, and sharing your screen.',
-        joinDescription: 'Pick a room name.<br />How about this one?',
+        title: 'A little closer.<br />Wherever you are.',
+        description: 'Clear video. Shared ideas. A space to be together, right in your browser.',
+        joinDescription: 'Your next conversation<br />starts here.',
         joinButtonLabel: 'JOIN ROOM',
         customizeButtonLabel: 'CUSTOMIZE ROOM',
         joinLastLabel: 'Your recent room:',
@@ -59,7 +58,7 @@ let BRAND = {
         title: 'MiroTalk SFU - Open Source WebRTC Video Conferencing',
         icon: '../images/logo.svg',
         appleTouchIcon: '../images/logo.svg',
-        newRoomTitle: 'Pick name. <br />Share URL. <br />Start conference.',
+        newRoomTitle: 'One link.<br />Everyone together.',
         newRoomDescription:
             "Each room has its disposable URL. Just pick a room name and share your custom URL. It's that easy.",
     },

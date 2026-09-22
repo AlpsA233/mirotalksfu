@@ -7851,20 +7851,20 @@ function renderDynamicThemeCards() {
 
 let themeMap = {
     default: {
-        '--body-bg': 'linear-gradient(135deg, #0e0e14, #1e1e28)',
-        '--trx-bg': 'linear-gradient(135deg, #0e0e14, #1e1e28)',
-        '--msger-bg': 'linear-gradient(135deg, #0e0e14, #1e1e28)',
-        '--left-msg-bg': '#141420',
-        '--right-msg-bg': '#1a1a26',
-        '--select-bg': '#161622',
-        '--select-focus-color': 'rgba(102, 190, 255, 0.5)',
-        '--tab-btn-active': '#1e1e28',
-        '--settings-bg': 'linear-gradient(135deg, #0e0e14, #1e1e28)',
-        '--wb-bg': 'linear-gradient(135deg, #0e0e14, #1e1e28)',
-        '--btns-bg-color': 'rgba(10, 10, 16, 0.8)',
-        '--dd-color': '#E8E8EC',
-        '--room-switch-accent': '#4678F9',
-        '--room-switch-ink': '#FFFFFF',
+        '--body-bg': 'var(--ui-bg)',
+        '--trx-bg': 'var(--ui-surface)',
+        '--msger-bg': 'var(--ui-surface)',
+        '--left-msg-bg': 'var(--ui-surface-2)',
+        '--right-msg-bg': 'var(--ui-accent-soft)',
+        '--select-bg': 'var(--ui-surface-2)',
+        '--select-focus-color': 'var(--ui-focus)',
+        '--tab-btn-active': 'var(--ui-surface-2)',
+        '--settings-bg': 'var(--ui-surface)',
+        '--wb-bg': 'var(--ui-surface)',
+        '--btns-bg-color': 'var(--ui-glass)',
+        '--dd-color': 'var(--ui-ink)',
+        '--room-switch-accent': 'var(--ui-accent)',
+        '--room-switch-ink': 'var(--ui-on-accent)',
     },
     dark: {
         '--body-bg': 'linear-gradient(135deg, #0d0d12, #181820)',
@@ -8010,6 +8010,7 @@ function applyTheme(props) {
 }
 
 function setCustomTheme() {
+    document.documentElement.dataset.roomTheme = 'custom';
     const color = themeCustom.color;
     const grad = `radial-gradient(${color}, ${color})`;
     applyTheme({
@@ -8035,6 +8036,7 @@ function setTheme() {
 
     selectTheme.selectedIndex = localStorageSettings.theme;
     const theme = selectTheme.value;
+    document.documentElement.dataset.roomTheme = theme === 'default' ? 'system' : 'custom';
     const themeNames = Object.keys(themeMap);
     const themeIndex = themeNames.indexOf(theme);
 

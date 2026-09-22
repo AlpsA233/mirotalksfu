@@ -5443,6 +5443,11 @@ class RoomClient {
             pipVideoContainer.className = 'pipVideoContainer';
 
             pipWindow.document.head.append(pipStylesheet);
+            const pipDesignStylesheet = document.createElement('link');
+            pipDesignStylesheet.rel = 'stylesheet';
+            pipDesignStylesheet.href = new URL('/css/DesignSystem.css?v=1', window.location.origin).href;
+            pipWindow.document.head.append(pipDesignStylesheet);
+            pipWindow.document.body.dataset.ui = 'pip';
             pipWindow.document.body.append(pipVideoContainer);
 
             function cloneVideoElements() {

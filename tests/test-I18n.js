@@ -64,7 +64,7 @@ describe('native UI language switching', () => {
         picker.dispatchEvent(new window.Event('change'));
         await tick();
         assert.equal(button.textContent.trim(), '加入房间');
-        assert(doc.querySelector('#appTitle').textContent.includes('免费在线视频通话。'));
+        assert(doc.querySelector('#appTitle').textContent.includes('让交流，更近一点。'));
         assert.equal(doc.documentElement.lang, 'zh-CN');
         assert.equal(window.localStorage.getItem('uiLanguageOverride'), 'zh');
         assert.equal(doc.querySelector('#lastRoom').textContent, 'Share');
@@ -74,7 +74,7 @@ describe('native UI language switching', () => {
         await window.i18n.setLanguage('en');
         assert.equal(doc.querySelector('#joinRoomButton'), button);
         assert.equal(button.textContent, englishButton);
-        assert(doc.querySelector('#appTitle').textContent.includes('Free browser based Real-time video calls.'));
+        assert(doc.querySelector('#appTitle').textContent.includes('A little closer.'));
         assert.equal(doc.documentElement.lang, 'en');
         assert.equal(window.localStorage.getItem('uiLanguageOverride'), 'en');
     });
@@ -178,7 +178,7 @@ describe('native UI language switching', () => {
     });
 
     for (const [name, selector, translated] of [
-        ['newroom', '#newRoomTitle', '选择名称。'],
+        ['newroom', '#newRoomTitle', '一个链接，'],
         ['login', '#loginHeading', '欢迎回来'],
         ['whoAreYou', '#waitingRoomHeading', '正在等待主持人…'],
         ['customizeRoom', '.cr-title', '打造您的会议空间'],

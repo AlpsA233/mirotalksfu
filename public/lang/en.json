@@ -1203,6 +1203,22 @@
         "{count} peers connected": "{count} peers connected",
         "{count} peer connected": "{count} peer connected",
         "Please allow the camera or microphone": "Please allow the camera or microphone",
-        "access to use this app.": "access to use this app."
+        "access to use this app.": "access to use this app.",
+        "A SPACE TO CONNECT": "A SPACE TO CONNECT",
+        "A little closer.": "A little closer.",
+        "Wherever you are.": "Wherever you are.",
+        "A little closer.<br />Wherever you are.": "A little closer.<br />Wherever you are.",
+        "Clear video. Shared ideas. A space to be together, right in your browser.": "Clear video. Shared ideas. A space to be together, right in your browser.",
+        "One link.": "One link.",
+        "Everyone together.": "Everyone together.",
+        "One link.<br />Everyone together.": "One link.<br />Everyone together.",
+        "Your next conversation": "Your next conversation",
+        "starts here.": "starts here.",
+        "Your next conversation<br />starts here.": "Your next conversation<br />starts here.",
+        "New meeting": "New meeting",
+        "Recordings": "Recordings",
+        "Main navigation": "Main navigation",
+        "Follow system": "Follow system",
+        "Generate room name": "Generate room name"
     }
 }

@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
-
 :root {
     --cr-bg: #101314;
     --cr-surface: #181c1d;
@@ -37,7 +35,7 @@ body {
         linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
         linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
     background-size: 48px 48px;
-    font-family: Manrope, sans-serif;
+    font-family: var(--ui-font, system-ui);
     letter-spacing: 0;
 }
 

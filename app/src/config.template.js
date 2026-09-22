@@ -1209,13 +1209,11 @@ module.exports = {
                 language: process.env.UI_LANGUAGE || 'en',
                 translationMode: process.env.UI_TRANSLATION_MODE || 'auto', // auto (default, native else Google) | native (no Google) | google (always Google)
                 name: process.env.APP_NAME || 'MiroTalk SFU',
-                title:
-                    process.env.APP_TITLE ||
-                    '<h1>MiroTalk SFU</h1> Free browser based Real-time video calls.<br />Simple, Secure, Fast.',
+                title: process.env.APP_TITLE || 'A little closer.<br />Wherever you are.',
                 description:
                     process.env.APP_DESCRIPTION ||
-                    'Start your next video call with a single click. No download, plug-in, or login is required.',
-                joinDescription: process.env.JOIN_DESCRIPTION || 'Pick a room name.<br />How about this one?',
+                    'Clear video. Shared ideas. A space to be together, right in your browser.',
+                joinDescription: process.env.JOIN_DESCRIPTION || 'Your next conversation<br />starts here.',
                 joinButtonLabel: process.env.JOIN_BUTTON_LABEL || 'JOIN ROOM',
                 customizeButtonLabel: process.env.CUSTOMIZE_BUTTON_LABEL || 'CUSTOMIZE ROOM',
                 joinLastLabel: process.env.JOIN_LAST_LABEL || 'Your recent room:',
@@ -1230,7 +1228,7 @@ module.exports = {
                 title: process.env.SITE_TITLE || 'MiroTalk SFU - Open Source WebRTC Video Conferencing',
                 icon: process.env.SITE_ICON_PATH || '../images/logo.svg',
                 appleTouchIcon: process.env.APPLE_TOUCH_ICON_PATH || '../images/logo.svg',
-                newRoomTitle: process.env.NEW_ROOM_TITLE || 'Pick name. <br />Share URL. <br />Start conference.',
+                newRoomTitle: process.env.NEW_ROOM_TITLE || 'One link.<br />Everyone together.',
                 newRoomDescription:
                     process.env.NEW_ROOM_DESC || 'Each room has its disposable URL. Just pick a name and share.',
             },
