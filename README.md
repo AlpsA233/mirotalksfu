@@ -189,6 +189,10 @@ Open [https://localhost:3010](https://localhost:3010) - done!
 
 Set `MANAGED_RECORDING_ENABLED=true`, a strong `MANAGED_RECORDING_ADMIN_PASSWORD`, and persistent mounts for `/data/recordings` and `/data/state`. Open `/recordings` to enable recording for **new** meetings and browse playback. `/data/recordings` may be an OS-mounted NAS path; keep `/data/state` local to the host because SQLite WAL is not suitable for a network filesystem. Independent tracks are available first; an administrator can generate the 1080p combined video when needed.
 
+Recorded meetings default to **recording only** for participants who allow microphone capture. **Start speaking / End speaking** controls whether other participants hear the microphone; the same audio track continues recording throughout. Moderator mute also returns participants to recording only. To actually stop recording your microphone, select **Stop microphone capture** in the microphone menu. Meetings without managed recording retain their existing microphone behavior. Full meeting compositions still mix all recorded audio, including recording-only periods.
+
+See [record-only audio verification](docs/record-only-audio.md) for setup, behavior and staged acceptance checks.
+
 </details>
 
 <details>

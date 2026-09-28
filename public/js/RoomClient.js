@@ -334,6 +334,13 @@ class RoomClient {
 
         this.dominantSpeaker = false;
         this.isAudioAllowed = isAudioAllowed;
+        this.recordOnlyAudio = false;
+        this.audioMode = 'off';
+        this.audioModeRevision = -1;
+        this.audioCaptureGeneration = 0;
+        this.managedAudioReady = false;
+        this.managedAudioBusy = false;
+        this.managedAudioError = '';
         this.isVideoAllowed = isVideoAllowed;
         this.isScreenAllowed = isScreenAllowed;
         this.joinRoomWithScreen = joinRoomWithScreen;
@@ -805,8 +812,16 @@ class RoomClient {
             console.log('07.1 ----> SERVER SYNC RECORDING', this.recording);
             // ###################################################################################################
 
-            if (room.managedRecording?.required) {
+            this.recordOnlyAudio = Boolean(room.managedRecording?.required || room.audioPolicy?.recordOnlyDefault);
+            if (this.recordOnlyAudio) {
+                this.peer_info.peer_audio_capture_allowed = this.isAudioAllowed;
                 this.userLog('info', `${icons.recording} 此会议正在由服务器留存录制`, 'top-end');
+                this.userLog(
+                    'info',
+                    'Your microphone is being recorded. Others can hear you only when you start speaking.',
+                    'top-end'
+                );
+                this.renderManagedAudio();
             }
 
             // Handle Room moderator rules
@@ -1323,6 +1338,7 @@ class RoomClient {
         this.socket.on('cmd', this.handleCmdData);
         this.socket.on('peerAction', this.handlePeerAction);
         this.socket.on('updatePeerInfo', this.handleUpdatePeerInfo);
+        this.socket.on('audioModeChanged', this.handleAudioModeChanged);
         this.socket.on('setPresenterRole', this.handleSetPresenterRole);
         this.socket.on('fileInfo', this.handleFileInfoData);
         this.socket.on('file', this.handleFileData);
@@ -1341,6 +1357,11 @@ class RoomClient {
             if (data?.state === 'recording') {
                 this.userLog('info', `${icons.recording} 此会议正在由服务器留存录制`, 'top-end');
             } else if (data?.state === 'failed') {
+                if (this.recordOnlyAudio) {
+                    this.stopManagedAudioCapture();
+                    this.managedAudioError = 'Recording unavailable';
+                    this.renderManagedAudio();
+                }
                 this.userLog('error', `${icons.recording} 会议录制故障，会议将结束`, 'top-end');
             }
         });
@@ -2061,13 +2082,14 @@ class RoomClient {
 
     getReconnectDirectJoinURL() {
         const sfu_peer_info = this.getPeerInfoFromLocalStorage();
-        const { peer_audio, peer_video, peer_screen, peer_token } = sfu_peer_info ? sfu_peer_info : this.peer_info;
+        const { peer_audio, peer_audio_capture, peer_audio_capture_allowed, peer_video, peer_screen, peer_token } =
+            sfu_peer_info ? sfu_peer_info : this.peer_info;
         const baseUrl = `${window.location.origin}/join`;
         const queryParams = {
             room: this.room_id,
             roomPassword: this.RoomPassword,
             name: this.peer_name,
-            audio: peer_audio,
+            audio: peer_audio_capture_allowed ?? peer_audio_capture ?? peer_audio,
             video: peer_video,
             screen: peer_screen,
             notify: 0,
@@ -2157,10 +2179,128 @@ class RoomClient {
     // START LOCAL AUDIO VIDEO MEDIA
     // ####################################################
 
+    renderManagedAudio() {
+        if (typeof updateManagedAudioUi === 'function') updateManagedAudioUi(this);
+    }
+
+    handleAudioModeChanged = (state) => this.applyAudioMode(state);
+
+    applyAudioMode(state) {
+        if (!state || !['off', 'record_only', 'live'].includes(state.mode)) return;
+        if (state.peer_id !== this.peer_id) {
+            const peer = this.peers.get(state.peer_id);
+            if (peer) {
+                peer.peer_info.peer_audio_mode = state.mode;
+                peer.peer_info.peer_audio = state.mode === 'live';
+            }
+            this.setPeerAudio(state.peer_id, state.mode === 'live');
+            return;
+        }
+        if (!this.recordOnlyAudio) return;
+        const currentProducerId = this.producerLabel.get(mediaType.audio);
+        if (currentProducerId && state.producer_id && currentProducerId !== state.producer_id) return;
+        if (state.revision !== undefined) {
+            if (state.revision < this.audioModeRevision) return;
+            this.audioModeRevision = state.revision;
+        }
+        // A late acknowledgement must not revive a microphone closed locally.
+        if (state.mode !== 'off' && !this.producerExist(mediaType.audio)) return;
+        this.audioMode = state.mode;
+        this.peer_info.peer_audio_mode = state.mode;
+        this.peer_info.peer_audio_capture = state.mode !== 'off';
+        this.setIsAudio(this.peer_id, state.mode === 'live');
+        this.event(
+            state.mode === 'live'
+                ? _EVENTS.resumeAudio
+                : state.mode === 'record_only'
+                  ? _EVENTS.pauseAudio
+                  : _EVENTS.stopAudio
+        );
+        this.updatePeerInfoInLocalStorage();
+        this.renderManagedAudio();
+    }
+
+    setManagedAudioMode(mode) {
+        const generation = this.audioCaptureGeneration;
+        // Queue a push-to-talk release behind its press, even before the first
+        // acknowledgement arrives. Never automatically retry a speaking request.
+        const operation = (this.managedAudioOperation || Promise.resolve())
+            .catch(() => {})
+            .then(async () => {
+                if (generation !== this.audioCaptureGeneration) return false;
+                if (!this.producerExist(mediaType.audio)) {
+                    if (mode !== 'live') return false;
+                    if (!(await this.produce(mediaType.audio, microphoneSelect.value))) return false;
+                }
+                this.managedAudioBusy = true;
+                this.managedAudioError = '';
+                this.renderManagedAudio();
+                try {
+                    const state = await this.socket.request(
+                        'setAudioMode',
+                        {
+                            producer_id: this.producerLabel.get(mediaType.audio),
+                            mode,
+                        },
+                        5000
+                    );
+                    if (generation !== this.audioCaptureGeneration) return false;
+                    this.applyAudioMode(state);
+                    return true;
+                } catch (error) {
+                    if (generation !== this.audioCaptureGeneration) return false;
+                    this.stopManagedAudioCapture();
+                    this.managedAudioError = 'Audio capture stopped. Please try again.';
+                    this.userLog('warning', this.managedAudioError, 'top-end');
+                    this.renderManagedAudio();
+                    return false;
+                } finally {
+                    if (generation === this.audioCaptureGeneration) {
+                        this.managedAudioBusy = false;
+                        this.renderManagedAudio();
+                    }
+                }
+            });
+        this.managedAudioOperation = operation;
+        return operation;
+    }
+
+    stopManagedAudioCapture() {
+        this.audioCaptureGeneration++;
+        this.managedAudioBusy = false;
+        this.closeProducer(mediaType.audio);
+        this.managedMicrophoneStream?.getTracks().forEach((track) => track.stop());
+        this.localAudioStream?.getTracks().forEach((track) => track.stop());
+        this.managedMicrophoneStream = null;
+        this.localAudioStream = null;
+        this.disableRNNoiseSuppression();
+        this.managedAudioReady = false;
+        this.isAudioAllowed = false;
+        this.applyAudioMode({ peer_id: this.peer_id, mode: 'off' });
+    }
+
+    async toggleManagedAudioCapture() {
+        if (this.managedAudioBusy && !this.producerExist(mediaType.audio)) return;
+        const enabled = !this.producerExist(mediaType.audio);
+        this.managedAudioError = '';
+        if (enabled) {
+            await this.produce(mediaType.audio, microphoneSelect.value);
+        } else {
+            this.stopManagedAudioCapture();
+        }
+        this.peer_info.peer_audio_capture_allowed = this.producerExist(mediaType.audio);
+        this.updatePeerInfoInLocalStorage();
+        lS.setInitConfig(lS.MEDIA_TYPE.audio, this.producerExist(mediaType.audio));
+        this.renderManagedAudio();
+    }
+
     async startLocalMedia() {
         console.log('08 ----> START LOCAL MEDIA...');
         const audioProducerExist = this.producerExist(mediaType.audio);
-        if (this.isAudioAllowed) {
+        if (this.recordOnlyAudio) {
+            if (this.isAudioAllowed && !audioProducerExist) await this.produce(mediaType.audio, microphoneSelect.value);
+            else if (!audioProducerExist) this.applyAudioMode({ peer_id: this.peer_id, mode: 'off' });
+        } else if (this.isAudioAllowed) {
             if (!audioProducerExist) {
                 await this.produce(mediaType.audio, microphoneSelect.value);
                 console.log('09 ----> START AUDIO MEDIA');
@@ -2192,7 +2332,7 @@ class RoomClient {
             console.log('10 ----> VIDEO IS OFF');
         }
 
-        if (!isEnumerateAudioDevices) {
+        if (!isEnumerateAudioDevices && !this.recordOnlyAudio) {
             hide(startAudioButton);
             hide(stopAudioButton);
             hide(startAudioDeviceDropdown);
@@ -2226,6 +2366,8 @@ class RoomClient {
     // ####################################################
 
     async produce(type, deviceId = null, swapCamera = false, init = false) {
+        const managedMicrophone = this.recordOnlyAudio && type === mediaType.audio;
+        const captureGeneration = this.audioCaptureGeneration;
         let mediaConstraints = {};
         let elem;
         let stream;
@@ -2237,6 +2379,7 @@ class RoomClient {
             case mediaType.audio:
                 if (!BUTTONS.main.startAudioButton) return;
                 this.isAudioAllowed = true;
+                if (managedMicrophone) this.peer_info.peer_audio_capture_allowed = true;
                 mediaConstraints = this.getAudioConstraints(deviceId);
                 this.peer_info.peer_audio = true;
                 audio = true;
@@ -2264,6 +2407,13 @@ class RoomClient {
 
         if (this.producerLabel.has(type)) {
             return console.warn('Producer already exists for this type ' + type);
+        }
+
+        if (managedMicrophone) {
+            this.managedAudioBusy = true;
+            this.managedAudioReady = false;
+            this.managedAudioError = '';
+            this.renderManagedAudio();
         }
 
         const videoPrivacyBtn = this.getId(this.peer_id + '__vp');
@@ -2302,6 +2452,13 @@ class RoomClient {
                 }
             }
 
+            if (managedMicrophone) {
+                if (captureGeneration !== this.audioCaptureGeneration) {
+                    stream.getTracks().forEach((track) => track.stop());
+                    return;
+                }
+                this.managedMicrophoneStream = stream;
+            }
             if (audio && BUTTONS.settings.customNoiseSuppression) {
                 /*
                  * Initialize RNNoise Suppression if enabled and supported
@@ -2388,6 +2545,13 @@ class RoomClient {
 
             const producer = await this.producerTransport.produce(params);
 
+            if (managedMicrophone && captureGeneration !== this.audioCaptureGeneration) {
+                producer.close();
+                stream.getTracks().forEach((track) => track.stop());
+                this.socket.emit('producerClosed', { producer_id: producer.id, type, status: false });
+                return;
+            }
+
             if (!producer) {
                 throw new Error('Producer not found!');
             }
@@ -2449,8 +2613,13 @@ class RoomClient {
 
             switch (type) {
                 case mediaType.audio:
-                    this.setIsAudio(this.peer_id, true);
-                    this.event(_EVENTS.startAudio);
+                    if (managedMicrophone) {
+                        this.managedAudioReady = true;
+                        this.applyAudioMode({ peer_id: this.peer_id, mode: 'record_only' });
+                    } else {
+                        this.setIsAudio(this.peer_id, true);
+                        this.event(_EVENTS.startAudio);
+                    }
                     break;
                 case mediaType.video:
                     this.setIsVideo(true);
@@ -2467,8 +2636,19 @@ class RoomClient {
             this.sound('joined');
             return producer;
         } catch (err) {
+            if (managedMicrophone) {
+                if (captureGeneration !== this.audioCaptureGeneration) return;
+                this.stopManagedAudioCapture();
+                this.managedAudioError = 'Microphone unavailable. Check permission and recording status.';
+                this.renderManagedAudio();
+            }
             console.error('Produce error:', err);
             handleMediaError(type, err);
+        } finally {
+            if (managedMicrophone && captureGeneration === this.audioCaptureGeneration) {
+                this.managedAudioBusy = false;
+                this.renderManagedAudio();
+            }
         }
     }
 
@@ -3199,7 +3379,10 @@ class RoomClient {
     closeThenProduce(type, deviceId = null, swapCamera = false) {
         const previousCamera = camera;
         this.closeProducer(type, 'closeThenProduce');
+        const captureGeneration = this.audioCaptureGeneration;
         setTimeout(async function () {
+            if (rc.recordOnlyAudio && type === mediaType.audio && captureGeneration !== rc.audioCaptureGeneration)
+                return;
             try {
                 await rc.produce(type, deviceId, swapCamera);
             } catch (err) {
@@ -3451,6 +3634,7 @@ class RoomClient {
     }
 
     async pauseProducer(type) {
+        if (this.recordOnlyAudio && type === mediaType.audio) return this.setManagedAudioMode('record_only');
         if (!this.producerLabel.has(type)) {
             return console.warn('There is no producer for this type ' + type);
         }
@@ -3481,6 +3665,7 @@ class RoomClient {
     }
 
     async resumeProducer(type) {
+        if (this.recordOnlyAudio && type === mediaType.audio) return this.setManagedAudioMode('live');
         if (!this.producerLabel.has(type)) {
             return console.warn('There is no producer for this type ' + type);
         }
@@ -3517,6 +3702,7 @@ class RoomClient {
 
         const producer_id = this.producerLabel.get(type);
         const producer = this.producers.get(producer_id);
+        if (this.recordOnlyAudio && type === mediaType.audio) this.audioCaptureGeneration++;
 
         // Stop all tracks of the producer's stream
         if (producer && producer.track) {
@@ -3557,6 +3743,14 @@ class RoomClient {
         }
 
         if (type === mediaType.audio) {
+            if (this.recordOnlyAudio) {
+                this.managedMicrophoneStream?.getTracks().forEach((track) => track.stop());
+                this.localAudioStream?.getTracks().forEach((track) => track.stop());
+                this.managedMicrophoneStream = null;
+                this.managedAudioReady = false;
+                this.disableRNNoiseSuppression();
+                this.applyAudioMode({ peer_id: this.peer_id, mode: 'off' });
+            }
             const audio = this.getId(producer_id);
             this.removeAudioProducer(audio, event);
         }
@@ -3669,6 +3863,7 @@ class RoomClient {
     }
 
     removeAudioProducer(audio, event) {
+        if (!audio) return;
         audio.srcObject.getTracks().forEach(function (track) {
             track.stop();
         });
@@ -3698,7 +3893,11 @@ class RoomClient {
             return;
         }
 
-        if (this.consumingProducers.has(producer_id)) return;
+        if (this.consumingProducers.has(producer_id)) {
+            this.pendingProducerAnnouncements ||= new Map();
+            this.pendingProducerAnnouncements.set(producer_id, { peer_name, peer_info, type });
+            return;
+        }
         this.consumingProducers.add(producer_id);
 
         try {
@@ -3743,7 +3942,9 @@ class RoomClient {
                 this.removeConsumer(consumer.id, consumer.kind);
             });
         } catch (error) {
-            if (error.code === 'PRODUCER_NOT_FOUND') {
+            if (['PRODUCER_NOT_FOUND', 'AUDIO_NOT_LIVE'].includes(error.code)) {
+                if (createdConsumer && this.consumers.has(createdConsumer.id))
+                    this.removeConsumer(createdConsumer.id, createdConsumer.kind);
                 console.debug('Consume skipped: producer is no longer available', { producer_id, type });
                 return;
             }
@@ -3757,6 +3958,11 @@ class RoomClient {
             popupHtmlMessage(null, image.network, 'Consume', error, 'center', false, false);
         } finally {
             this.consumingProducers.delete(producer_id);
+            const pending = this.pendingProducerAnnouncements?.get(producer_id);
+            if (pending) {
+                this.pendingProducerAnnouncements.delete(producer_id);
+                void this.consume(producer_id, pending.peer_name, pending.peer_info, pending.type);
+            }
         }
     }
 
@@ -4648,6 +4854,7 @@ class RoomClient {
                 this.socket.off('cmd');
                 this.socket.off('peerAction');
                 this.socket.off('updatePeerInfo');
+                this.socket.off('audioModeChanged', this.handleAudioModeChanged);
                 this.socket.off('setPresenterRole');
                 this.socket.off('fileInfo');
                 this.socket.off('file');
@@ -12180,6 +12387,11 @@ class RoomClient {
                     break;
                 case 'mute':
                     if (peerActionAllowed) {
+                        if (this.recordOnlyAudio) {
+                            await this.pauseProducer(mediaType.audio);
+                            this.userLog('info', 'The moderator ended your speaking. Recording continues.', 'top-end');
+                            break;
+                        }
                         if (this.producerExist(mediaType.audio)) {
                             await this.pauseProducer(mediaType.audio);
                             this.updatePeerInfo(this.peer_name, this.peer_id, 'audio', false);
@@ -12270,6 +12482,10 @@ class RoomClient {
             if (result.isConfirmed) {
                 switch (type) {
                     case mediaType.audio:
+                        if (this.recordOnlyAudio) {
+                            await this.resumeProducer(mediaType.audio);
+                            break;
+                        }
                         this.producerExist(mediaType.audio)
                             ? await this.resumeProducer(mediaType.audio)
                             : await this.produce(mediaType.audio, microphoneSelect.value);
@@ -13034,6 +13250,11 @@ class RoomClient {
     // ####################################################
 
     updatePeerInfo(peer_name, peer_id, type, status, emit = true, presenter = false) {
+        if (emit && this.recordOnlyAudio && type === 'audio') {
+            // Speaking state comes exclusively from the server acknowledgement.
+            this.renderManagedAudio();
+            return;
+        }
         if (emit) {
             switch (type) {
                 case 'audio':

@@ -177,7 +177,14 @@ module.exports = class Peer {
         this.producers.set(producer_id, producer);
     }
 
-    async createProducer(producerTransportId, producer_rtpParameters, producer_kind, producer_type, paused = false) {
+    async createProducer(
+        producerTransportId,
+        producer_rtpParameters,
+        producer_kind,
+        producer_type,
+        paused = false,
+        audioMode
+    ) {
         if (!producerTransportId || !producer_rtpParameters || !producer_kind || !producer_type) {
             throw new Error('Missing required parameters for creating a producer');
         }
@@ -198,6 +205,7 @@ module.exports = class Peer {
                 kind: producer_kind,
                 rtpParameters: producer_rtpParameters,
                 paused: Boolean(paused),
+                appData: { mediaType: producer_type, ...(audioMode ? { audioMode } : {}) },
             });
 
             this.addProducer(producer.id, producer);

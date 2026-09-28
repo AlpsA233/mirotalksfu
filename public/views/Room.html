@@ -196,6 +196,10 @@
                     <div id="imageGrid" class="image-grid fadein"></div>
                     <span id="initErrorMessage" class="show-error"></span>
                 </div>
+                <p class="managed-audio-notice">
+                    In recorded meetings, your microphone is recorded even when you are not speaking. Turn off the
+                    microphone here to stop capture.
+                </p>
                 <div class="initComands">
                     <button id="initVideoAudioRefreshButton" class="fas fa-rotate"></button>
                     <button id="initAudioVideoButton" class="fas fa-eye"></button>
@@ -255,6 +259,7 @@
             </button>
         </div>
 
+        <div id="managedAudioStatus" class="managed-audio-status hidden" role="status" aria-live="polite"></div>
         <div id="bottomButtons" class="fadein">
             <div id="startAudioSplit" class="split-btn">
                 <span id="pushToTalkStatus" class="push-to-talk-status hidden" role="status" aria-live="polite"

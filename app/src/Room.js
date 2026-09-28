@@ -3,6 +3,7 @@
 const { v4: uuidv4 } = require('uuid');
 const config = require('./config');
 const RtmpStreaming = require('./RtmpStreaming');
+const AudioRouting = require('./AudioRouting');
 const Logger = require('./Logger');
 const log = new Logger('Room');
 
@@ -105,6 +106,7 @@ module.exports = class Room {
             sessionId: this.sessionId,
             broadcasting: this._isBroadcasting,
             recording: this.recording,
+            audioPolicy: { recordOnlyDefault: Boolean(this.recordOnlyAudio) },
             config: {
                 isLocked: this._isLocked,
                 isLobbyEnabled: this._isLobbyEnabled,
@@ -313,7 +315,12 @@ module.exports = class Room {
                     this.peers.forEach((peer) => {
                         const { id, peer_audio, peer_name } = peer;
                         peer.producers.forEach((peerProducer) => {
-                            if (peerProducer.id === producer.id && peerProducer.kind === 'audio' && peer_audio) {
+                            if (
+                                peerProducer.id === producer.id &&
+                                peerProducer.kind === 'audio' &&
+                                peer_audio &&
+                                AudioRouting.isAudible(peerProducer)
+                            ) {
                                 const data = {
                                     peer_id: id,
                                     peer_name: peer_name,
@@ -370,6 +377,7 @@ module.exports = class Room {
                         if (
                             peerProducer.id === dominantSpeaker.producer.id &&
                             peerProducer.kind === 'audio' &&
+                            AudioRouting.isAudible(peerProducer) &&
                             peer_audio
                         ) {
                             let videoProducerId = null;
@@ -525,6 +533,7 @@ module.exports = class Room {
             if (peerId === socket_id) return;
             const { peer_name, peer_info } = peer;
             peer.producers.forEach((producer) => {
+                if (!AudioRouting.isAudible(producer)) return;
                 producerList.push({
                     producer_id: producer.id,
                     producer_socket_id: peerId,
@@ -806,7 +815,9 @@ module.exports = class Room {
 
         let peerProducer;
         try {
-            peerProducer = await peer.createProducer(producerTransportId, rtpParameters, kind, type, paused);
+            const audioMode =
+                this.recordOnlyAudio && kind === 'audio' && type === 'audioType' ? 'record_only' : undefined;
+            peerProducer = await peer.createProducer(producerTransportId, rtpParameters, kind, type, paused, audioMode);
         } catch (error) {
             log.error(`Error creating producer for peer ${peer.peer_name} with socket ID ${socket_id}`, {
                 producerTransportId,
@@ -833,15 +844,17 @@ module.exports = class Room {
             throw new Error(`Producer transport with ID ${producerTransportId} not found for peer ${peer_name}`);
         }
 
-        this.broadCast(socket_id, 'newProducers', [
-            {
-                producer_id: id,
-                producer_socket_id: socket_id,
-                peer_name: peer_name,
-                peer_info: peer_info,
-                type: type,
-            },
-        ]);
+        if (AudioRouting.isManagedMicrophone(peerProducer)) AudioRouting.publishMode(this, peer, peerProducer);
+        if (AudioRouting.isAudible(peerProducer))
+            this.broadCast(socket_id, 'newProducers', [
+                {
+                    producer_id: id,
+                    producer_socket_id: socket_id,
+                    peer_name: peer_name,
+                    peer_info: peer_info,
+                    type: type,
+                },
+            ]);
 
         log.debug('Producer created successfully', {
             producerTransportId,
@@ -864,6 +877,8 @@ module.exports = class Room {
         const peer = this.getPeer(socket_id);
 
         try {
+            const producer = peer.getProducer(producer_id);
+            if (AudioRouting.isManagedMicrophone(producer)) AudioRouting.publishMode(this, peer, producer, 'off');
             Promise.resolve(this.onManagedProducerClosed?.(producer_id)).catch((error) =>
                 log.warn('Managed recording producer cleanup failed', { producer_id, error: error.message })
             );
@@ -890,12 +905,15 @@ module.exports = class Room {
         const peer = this.getPeer(socket_id);
         const { peer_name } = peer;
 
-        if (!this.getProducerById(producerId)) {
+        const sourceProducer = this.getProducerById(producerId);
+        if (!sourceProducer) {
             const error = new Error(`Producer with ID ${producerId} is no longer available`);
             error.code = 'PRODUCER_NOT_FOUND';
             error.retryable = false;
             throw error;
         }
+
+        AudioRouting.assertAudible(sourceProducer);
 
         if (!this.router.canConsume({ producerId, rtpCapabilities })) {
             throw new Error(
@@ -944,6 +962,12 @@ module.exports = class Room {
         }
 
         const { consumer, params, reused } = peerConsumer;
+        try {
+            AudioRouting.assertAudible(sourceProducer);
+        } catch (error) {
+            peer.removeConsumer(consumer.id);
+            throw error;
+        }
         const { id, kind } = consumer;
 
         if (!reused) {
@@ -978,6 +1002,24 @@ module.exports = class Room {
         });
 
         return params;
+    }
+
+    async resumeConsumer(socketId, consumerId) {
+        const peer = this.getPeer(socketId);
+        const consumer = peer?.getConsumer(consumerId);
+        if (!consumer || consumer.closed) {
+            const error = new Error('Consumer not found');
+            error.retryable = false;
+            throw error;
+        }
+        const producer = this.getProducerById(consumer.producerId);
+        if (!producer) throw new Error('Producer not found');
+        AudioRouting.assertAudible(producer);
+        await consumer.resume();
+        if (!AudioRouting.isAudible(producer)) {
+            peer.removeConsumer(consumerId);
+            AudioRouting.assertAudible(producer);
+        }
     }
 
     // ####################################################

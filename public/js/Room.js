@@ -2765,6 +2765,11 @@ function handleButtons() {
         setAudioButtonsDisabled(true);
         if (!isEnumerateAudioDevices) await initEnumerateAudioDevices();
 
+        if (rc.recordOnlyAudio) {
+            await rc.resumeProducer(RoomClient.mediaType.audio);
+            return;
+        }
+
         const producerExist = rc.producerExist(RoomClient.mediaType.audio);
         console.log('START AUDIO producerExist --->', producerExist);
 
@@ -3443,6 +3448,52 @@ function updatePushToTalkUi(enabled, transmitting = false) {
     stopIcon.className = enabled ? 'fas fa-microphone-lines' : 'fas fa-microphone';
 }
 
+function updateManagedAudioUi(client) {
+    if (!client.recordOnlyAudio) return;
+    const status = getId('managedAudioStatus');
+    if (!status) return;
+    if (!BUTTONS.main.startAudioButton || (isBroadcastingEnabled && !isPresenter)) {
+        status.classList.add('hidden');
+        return;
+    }
+    const translate = (value, namespace = 'labels') => (window.i18n?.t ? window.i18n.t(value, namespace) : value);
+    const speaking = client.audioMode === 'live';
+    const text =
+        client.managedAudioError ||
+        (client.managedAudioBusy
+            ? 'Preparing microphone...'
+            : !client.managedAudioReady || client.audioMode === 'off'
+              ? 'Microphone capture stopped'
+              : speaking
+                ? 'Speaking and recording'
+                : 'Recording only. Others cannot hear you.');
+    status.textContent = translate(text);
+    status.classList.remove('hidden');
+    status.dataset.mode = client.audioMode;
+    for (const [button, label] of [
+        [startAudioButton, 'Start speaking'],
+        [stopAudioButton, 'End speaking'],
+    ]) {
+        button.classList.add('managed-audio-button');
+        button.setAttribute('aria-label', translate(label, 'buttons'));
+        button.title = translate(label, 'buttons');
+        button._tippy?.setContent(translate(label, 'tooltips'));
+        let caption = button.querySelector('.managed-audio-label');
+        if (!caption) {
+            caption = document.createElement('span');
+            caption.className = 'managed-audio-label';
+            button.appendChild(caption);
+        }
+        caption.textContent = translate(label, 'buttons');
+        button.disabled = Boolean(client.managedAudioBusy);
+    }
+    speaking ? hide(startAudioButton) : show(startAudioButton);
+    speaking ? show(stopAudioButton) : hide(stopAudioButton);
+    audio = speaking;
+    applyKeepAwake(client.audioMode !== 'off');
+    window.dispatchEvent(new Event('managedAudioStateChanged'));
+}
+
 async function setPushToTalkPressed(pressed) {
     if (!isPushToTalkActive || pressed === isPushToTalkPressed) return;
 
@@ -3495,7 +3546,9 @@ function handleSelects() {
     };
     microphoneSelect.onchange = () => {
         // If audio is currently OFF, just update selection for the next start.
-        if (audio) rc.closeThenProduce(RoomClient.mediaType.audio, microphoneSelect.value);
+        if (audio || (rc.recordOnlyAudio && rc.producerExist(RoomClient.mediaType.audio))) {
+            rc.closeThenProduce(RoomClient.mediaType.audio, microphoneSelect.value);
+        }
         refreshLsDevices();
     };
     speakerSelect.onchange = () => {
@@ -3518,6 +3571,15 @@ function handleSelects() {
     switchPushToTalk.onchange = async (e) => {
         const producerExist = rc.producerExist(RoomClient.mediaType.audio);
         const enablePushToTalk = e.currentTarget.checked;
+        if (rc.recordOnlyAudio) {
+            isPushToTalkActive = enablePushToTalk;
+            isPushToTalkPressed = false;
+            await rc.pauseProducer(RoomClient.mediaType.audio);
+            updatePushToTalkUi(enablePushToTalk);
+            rc.renderManagedAudio();
+            e.target.blur();
+            return;
+        }
         if (!producerExist && enablePushToTalk) {
             console.log('Push-to-talk: start audio producer');
             setAudioButtonsDisabled(true);
@@ -5257,11 +5319,14 @@ function restoreSplitButtonsBorderRadius() {
 }
 
 function setupQuickDeviceSwitchDropdowns() {
-    // For now keep this feature only for desktop devices
-    if (!isDesktopDevice) {
+    // Recorded meetings need the stop-capture action on phones as well.
+    if (!isDesktopDevice && !rc.recordOnlyAudio) {
         restoreSplitButtonsBorderRadius();
+        // Room policy arrives after the initial controls have been mounted.
+        window.addEventListener('managedAudioStateChanged', setupQuickDeviceSwitchDropdowns, { once: true });
         return;
     }
+    if (rc.quickDeviceMenusReady) return;
 
     if (
         !startVideoBtn ||
@@ -5275,12 +5340,13 @@ function setupQuickDeviceSwitchDropdowns() {
     ) {
         return;
     }
+    rc.quickDeviceMenusReady = true;
 
     function syncVisibility() {
         // Keep dropdown visible while either Start or Stop button is visible
         const showVideo = !startVideoBtn.classList.contains('hidden') || !stopVideoBtn.classList.contains('hidden');
         const showAudio = !startAudioBtn.classList.contains('hidden') || !stopAudioBtn.classList.contains('hidden');
-        videoDropdown.classList.toggle('hidden', !showVideo);
+        videoDropdown.classList.toggle('hidden', !showVideo || !isDesktopDevice);
         audioDropdown.classList.toggle('hidden', !showAudio);
     }
 
@@ -5330,6 +5396,9 @@ function setupQuickDeviceSwitchDropdowns() {
         },
 
         async start(entries) {
+            // Device probing opens extra microphone streams. Managed meetings
+            // use the existing capture indicator instead, including on iPhone.
+            if (rc.recordOnlyAudio) return;
             if (!isAudioContextSupported()) return;
             this.active = true;
             this.setBarTargets(entries);
@@ -5606,6 +5675,25 @@ function setupQuickDeviceSwitchDropdowns() {
 
         audioMenu.innerHTML = '';
 
+        if (rc.recordOnlyAudio) {
+            const captureButton = document.createElement('button');
+            captureButton.type = 'button';
+            captureButton.id = 'managedAudioCaptureButton';
+            captureButton.className = 'device-menu-action-btn';
+            const captureLabel = rc.producerExist(RoomClient.mediaType.audio)
+                ? 'Stop microphone capture'
+                : 'Resume recording only';
+            captureButton.textContent = window.i18n?.t(captureLabel, 'buttons') || captureLabel;
+            captureButton.disabled = rc.managedAudioBusy && !rc.producerExist(RoomClient.mediaType.audio);
+            captureButton.onclick = async () => {
+                audioMeterManager.stop();
+                await rc.toggleManagedAudioCapture();
+                buildAudioMenu();
+            };
+            audioMenu.appendChild(captureButton);
+            appendMenuDivider(audioMenu);
+        }
+
         appendMenuHeader(audioMenu, 'fas fa-microphone', 'Microphones');
         const audioMeterEntries = [];
         appendSelectOptions(audioMenu, microphoneSelect, 'No microphones found', buildAudioMenu, audioMeterEntries);
@@ -5745,6 +5833,10 @@ function setupQuickDeviceSwitchDropdowns() {
     });
     audioDropdown.addEventListener('hidden.bs.dropdown', () => {
         audioMeterManager.stop();
+    });
+    window.addEventListener('managedAudioStateChanged', () => {
+        audioMeterManager.stop();
+        rebuildAudioMenu();
     });
 
     // Keep UI synced when settings panel changes device

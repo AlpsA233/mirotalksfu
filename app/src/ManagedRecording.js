@@ -181,12 +181,14 @@ class ManagedRecording extends EventEmitter {
     async prepareMeeting(room) {
         if (!this.isAvailable()) {
             if (this.config.defaultEnabled) throw new Error('Managed recording is unavailable');
+            room.recordOnlyAudio = false;
             return { required: false, state: 'disabled' };
         }
         const existing = this.meetings.get(room.getSessionId());
         if (existing) return { required: existing.required, meetingId: existing.id, state: existing.state };
 
         const required = this.isEnabledForNewMeetings();
+        room.recordOnlyAudio = required;
         const meeting = {
             id: room.getSessionId(),
             room,

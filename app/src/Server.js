@@ -109,6 +109,7 @@ const Mattermost = require('./Mattermost');
 const restrictAccessByIP = require('./middleware/IpWhitelist');
 const { applyEmbedHeaders, embedAllowedOrigins, embedCsp } = require('./middleware/EmbedHeaders');
 const ManagedRecording = require('./ManagedRecording');
+const AudioRouting = require('./AudioRouting');
 const { createRecordingRouter } = require('./RecordingHttp');
 const packageJson = require('../../package.json');
 
@@ -2737,6 +2738,12 @@ function startServer() {
                 log.error('Managed recording prevents room admission', { room_id: room.id, error: error.message });
                 return cb({ error: 'Managed recording is unavailable' });
             }
+            if (room.recordOnlyAudio) {
+                const joiningPeer = room.getPeer(socket.id);
+                joiningPeer.peer_info.peer_audio = joiningPeer.peer_audio = false;
+                joiningPeer.peer_info.peer_audio_mode = 'off';
+                joiningPeer.peer_info.peer_audio_capture = false;
+            }
             const roomJson = room.toJson();
             roomJson.managedRecording = managedRecordingState;
 
@@ -2935,7 +2942,7 @@ function startServer() {
                 });
 
                 // add & monitor producer audio level and dominant speaker
-                if (kind === 'audio') {
+                if (kind === 'audio' && AudioRouting.isAudible(peer.getProducer(producer_id))) {
                     await Promise.all([
                         room.addProducerToAudioLevelObserver({ producerId: producer_id }),
                         room.addProducerToActiveSpeakerObserver({ producerId: producer_id }),
@@ -2981,7 +2988,7 @@ function startServer() {
 
                 callback(params);
             } catch (err) {
-                const producerUnavailable = err.code === 'PRODUCER_NOT_FOUND';
+                const producerUnavailable = ['PRODUCER_NOT_FOUND', 'AUDIO_NOT_LIVE'].includes(err.code);
                 const details = {
                     error: err,
                     type,
@@ -3127,6 +3134,21 @@ function startServer() {
             }
         });
 
+        socket.on('setAudioMode', async ({ producer_id, mode } = {}, callback) => {
+            if (!roomExists(socket)) return callback({ error: 'Room not found' });
+            const { room, peer } = getRoomAndPeer(socket);
+            if (!peer || isPeerInLobby(peer)) return callback({ error: 'Peer is not admitted' });
+            const producer = peer.getProducer(producer_id);
+            if (!producer || !AudioRouting.isManagedMicrophone(producer)) {
+                return callback({ error: 'Managed microphone not found' });
+            }
+            try {
+                callback(await AudioRouting.setMode(room, peer, producer, mode));
+            } catch (error) {
+                callback({ error: error.message });
+            }
+        });
+
         socket.on('pauseProducer', async ({ producer_id, type }, callback) => {
             if (!roomExists(socket)) {
                 return callback({ error: 'Room not found' });
@@ -3153,6 +3175,10 @@ function startServer() {
             const peerInfo = getPeerInfo(peer);
 
             try {
+                const room = getRoom(socket);
+                if (AudioRouting.isManagedMicrophone(producer)) {
+                    return callback(await AudioRouting.setMode(room, peer, producer, 'record_only'));
+                }
                 await managedRecording.setProducerUserPaused(room, producer_id, true);
                 await producer.pause();
 
@@ -3194,6 +3220,10 @@ function startServer() {
             const peerInfo = getPeerInfo(peer);
 
             try {
+                const room = getRoom(socket);
+                if (AudioRouting.isManagedMicrophone(producer)) {
+                    return callback(await AudioRouting.setMode(room, peer, producer, 'live'));
+                }
                 const recordingControlled = await managedRecording.setProducerUserPaused(room, producer_id, false);
                 if (!recordingControlled) await producer.resume();
 
@@ -3235,7 +3265,7 @@ function startServer() {
             const peerInfo = getPeerInfo(peer);
 
             try {
-                await consumer.resume();
+                await getRoom(socket).resumeConsumer(socket.id, consumer_id);
 
                 log.debug('Consumer resumed', { consumer_id, type, peerInfo });
 
@@ -3245,7 +3275,7 @@ function startServer() {
                     error: error,
                     peerInfo,
                 });
-                callback({ error: error.message });
+                callback({ error: error.message, code: error.code, retryable: error.retryable });
             }
         });
 
@@ -3681,6 +3711,19 @@ function startServer() {
 
             if (data.action === 'ban') room.addBannedPeer(data.to_peer_uuid);
 
+            if (data.action === 'mute' && room.recordOnlyAudio) {
+                const targets = data.broadcast
+                    ? [...room.peers.values()].filter((peer) => peer.id !== socket.id)
+                    : [room.getPeer(data.peer_id)].filter(Boolean);
+                await Promise.allSettled(
+                    targets.flatMap((peer) =>
+                        [...peer.producers.values()]
+                            .filter(AudioRouting.isManagedMicrophone)
+                            .map((producer) => AudioRouting.setMode(room, peer, producer, 'record_only'))
+                    )
+                );
+            }
+
             data.broadcast
                 ? room.broadCast(data.peer_id, 'peerAction', data)
                 : room.sendTo(data.peer_id, 'peerAction', data);
@@ -3754,6 +3797,11 @@ function startServer() {
             const data = checkXSS(dataObject);
 
             if (!Validator.isValidData(data)) return;
+
+            if (room.recordOnlyAudio && ['audio', 'audioType'].includes(data.type)) {
+                data.status = peer.peer_info.peer_audio_mode === 'live';
+                data.peer_id = socket.id;
+            }
 
             peer.updatePeerInfo(data);
 

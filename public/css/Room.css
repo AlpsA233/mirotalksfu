@@ -1,5 +1,61 @@
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@500&display=swap');
 
+.managed-audio-status {
+    position: fixed;
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: calc(100vw - 32px);
+    padding: 8px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    border-radius: 10px;
+    background: #202a35;
+    color: #fff;
+    font-size: 13px;
+    text-align: center;
+    z-index: 20;
+    pointer-events: none;
+}
+
+.managed-audio-status[data-mode='record_only'] {
+    border-color: #f4b85d;
+}
+.managed-audio-status[data-mode='live'] {
+    border-color: #62c69c;
+}
+.managed-audio-label {
+    display: block;
+    font-size: 9px;
+    line-height: 1.1;
+    color: #fff;
+}
+#bottomButtons button.managed-audio-button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 0;
+    gap: 2px;
+}
+#bottomButtons button.managed-audio-button i {
+    font-size: 16px;
+}
+@media screen and (max-width: 500px) {
+    .managed-audio-label {
+        font-size: 8px;
+    }
+    #bottomButtons button.managed-audio-button i {
+        font-size: 14px;
+    }
+}
+.managed-audio-notice {
+    max-width: 520px;
+    margin: 12px auto;
+    padding: 0 12px;
+    font-size: 13px;
+    text-align: center;
+}
+
 :root {
     --room-stage-bg: var(--body-bg);
     --room-panel-raised: var(--settings-bg);

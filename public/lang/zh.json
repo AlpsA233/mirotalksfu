@@ -131,7 +131,9 @@
         "Undo": "撤销",
         "Vanishing pen (disappears in 5s)": "消失笔（5 秒后消失）",
         "When enabled, uses server-side Whisper for higher accuracy transcription": "When enabled, uses server-side Whisper for higher accuracy transcription",
-        "When enabled, your transcription will be sent to all participants": "启用后，您的转录将发送给所有参与者"
+        "When enabled, your transcription will be sent to all participants": "启用后，您的转录将发送给所有参与者",
+        "Start speaking": "开始发言",
+        "End speaking": "结束发言"
     },
     "buttons": {
         "Add arrow": "添加箭头",
@@ -284,7 +286,11 @@
         "Voice Commands": "语音命令",
         "Whiteboard": "白板",
         "YouTube": "YouTube",
-        "YouTube Live": "YouTube Live"
+        "YouTube Live": "YouTube Live",
+        "Start speaking": "开始发言",
+        "End speaking": "结束发言",
+        "Stop microphone capture": "停止麦克风采集",
+        "Resume recording only": "恢复仅录音"
     },
     "labels": {
         "= Arrow": "= 箭头",
@@ -716,7 +722,15 @@
         "Your join request was approved by the moderator.": "您的加入请求已被主持人批准。",
         "Your join request was rejected by the moderator. You can try again later if the room becomes available.": "您的加入请求已被主持人拒绝。如果房间变为可用，您可以稍后再试。",
         "Your profile": "您的个人资料",
-        "Your recording session will be stored on the server.": "您的录制会话将存储在服务器上。"
+        "Your recording session will be stored on the server.": "您的录制会话将存储在服务器上。",
+        "Preparing microphone...": "正在准备麦克风…",
+        "Microphone capture stopped": "麦克风采集已停止",
+        "Speaking and recording": "正在发言并录音",
+        "Recording only. Others cannot hear you.": "仅录音中，其他人听不到",
+        "Recording unavailable": "录制不可用",
+        "Audio capture stopped. Please try again.": "音频采集已停止，请重试",
+        "Microphone unavailable. Check permission and recording status.": "麦克风不可用，请检查权限和录制状态",
+        "In recorded meetings, your microphone is recorded even when you are not speaking. Turn off the microphone here to stop capture.": "开启录制的会议中，不发言时也会录下麦克风声音。可在此关闭麦克风，停止采集。"
     },
     "dialogs": {
         "Edit frame title": "编辑框架标题",
@@ -1006,6 +1020,9 @@
         "Whisper transcription started": "Whisper transcription started",
         "Whisper transcription stopped": "Whisper transcription stopped",
         "You cannot change your own role": "You cannot change your own role",
-        "You cannot send files to yourself.": "您不能向自己发送文件。"
+        "You cannot send files to yourself.": "您不能向自己发送文件。",
+        "Your microphone is being recorded. Others can hear you only when you start speaking.": "默认仅录制麦克风声音，不向参会者播放；点击“开始发言”后其他人才能听到。",
+        "The moderator ended your speaking. Recording continues.": "主持人已结束你的发言，录音继续。",
+        "Audio capture stopped. Please try again.": "音频采集已停止，请重试"
     }
 }

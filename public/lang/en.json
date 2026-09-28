@@ -131,7 +131,9 @@
         "Undo": "Undo",
         "Vanishing pen (disappears in 5s)": "Vanishing pen (disappears in 5s)",
         "When enabled, uses server-side Whisper for higher accuracy transcription": "When enabled, uses server-side Whisper for higher accuracy transcription",
-        "When enabled, your transcription will be sent to all participants": "When enabled, your transcription will be sent to all participants"
+        "When enabled, your transcription will be sent to all participants": "When enabled, your transcription will be sent to all participants",
+        "Start speaking": "Start speaking",
+        "End speaking": "End speaking"
     },
     "buttons": {
         "Add arrow": "Add arrow",
@@ -284,7 +286,11 @@
         "Voice Commands": "Voice Commands",
         "Whiteboard": "Whiteboard",
         "YouTube": "YouTube",
-        "YouTube Live": "YouTube Live"
+        "YouTube Live": "YouTube Live",
+        "Start speaking": "Start speaking",
+        "End speaking": "End speaking",
+        "Stop microphone capture": "Stop microphone capture",
+        "Resume recording only": "Resume recording only"
     },
     "labels": {
         "= Arrow": "= Arrow",
@@ -716,7 +722,15 @@
         "Your join request was approved by the moderator.": "Your join request was approved by the moderator.",
         "Your join request was rejected by the moderator. You can try again later if the room becomes available.": "Your join request was rejected by the moderator. You can try again later if the room becomes available.",
         "Your profile": "Your profile",
-        "Your recording session will be stored on the server.": "Your recording session will be stored on the server."
+        "Your recording session will be stored on the server.": "Your recording session will be stored on the server.",
+        "Preparing microphone...": "Preparing microphone...",
+        "Microphone capture stopped": "Microphone capture stopped",
+        "Speaking and recording": "Speaking and recording",
+        "Recording only. Others cannot hear you.": "Recording only. Others cannot hear you.",
+        "Recording unavailable": "Recording unavailable",
+        "Audio capture stopped. Please try again.": "Audio capture stopped. Please try again.",
+        "Microphone unavailable. Check permission and recording status.": "Microphone unavailable. Check permission and recording status.",
+        "In recorded meetings, your microphone is recorded even when you are not speaking. Turn off the microphone here to stop capture.": "In recorded meetings, your microphone is recorded even when you are not speaking. Turn off the microphone here to stop capture."
     },
     "dialogs": {
         "Edit frame title": "Edit frame title",
@@ -1006,6 +1020,9 @@
         "Whisper transcription started": "Whisper transcription started",
         "Whisper transcription stopped": "Whisper transcription stopped",
         "You cannot change your own role": "You cannot change your own role",
-        "You cannot send files to yourself.": "You cannot send files to yourself."
+        "You cannot send files to yourself.": "You cannot send files to yourself.",
+        "Your microphone is being recorded. Others can hear you only when you start speaking.": "Your microphone is being recorded. Others can hear you only when you start speaking.",
+        "The moderator ended your speaking. Recording continues.": "The moderator ended your speaking. Recording continues.",
+        "Audio capture stopped. Please try again.": "Audio capture stopped. Please try again."
     }
 }

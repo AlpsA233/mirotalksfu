@@ -11,7 +11,8 @@ function isWakeLockSupported() {
 }
 
 function isAudioOrUIActive() {
-    return (audio || userWantsKeepAwake) && !video && !screen;
+    const capturingAudio = typeof rc !== 'undefined' && rc?.recordOnlyAudio && rc.audioMode !== 'off';
+    return (audio || capturingAudio || userWantsKeepAwake) && !video && !screen;
 }
 
 function shouldKeepAwake() {
