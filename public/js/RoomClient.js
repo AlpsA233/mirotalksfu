@@ -401,6 +401,8 @@ class RoomClient {
         this.pinnedVideoPlayerId = null;
         this.camVideo = false;
         this.videoQualitySelectedIndex = 0;
+        this.videoCaptureGeneration = 0;
+        this.lastCameraConfig = null;
 
         this.pollSelectedOptions = {};
         this.chatGPTContext = [];
@@ -2365,12 +2367,14 @@ class RoomClient {
     // PRODUCER
     // ####################################################
 
-    async produce(type, deviceId = null, swapCamera = false, init = false) {
+    async produce(type, deviceId = null, swapCamera = false, init = false, cameraOptions = null) {
         const managedMicrophone = this.recordOnlyAudio && type === mediaType.audio;
         const captureGeneration = this.audioCaptureGeneration;
+        const videoGeneration = this.videoCaptureGeneration;
         let mediaConstraints = {};
         let elem;
         let stream;
+        let rawCameraStream;
         let audio = false;
         let video = false;
         let screen = false;
@@ -2387,7 +2391,20 @@ class RoomClient {
             case mediaType.video:
                 if (!BUTTONS.main.startVideoButton) return;
                 this.isVideoAllowed = true;
-                mediaConstraints = swapCamera ? this.getCameraConstraints() : this.getVideoConstraints(deviceId);
+                cameraOptions ||= {
+                    deviceId,
+                    quality: videoQuality.value,
+                    fps: parseInt(videoFps.value, 10) || 30,
+                    fpsSelection: videoFps.value,
+                };
+                if (swapCamera)
+                    cameraOptions = {
+                        quality: 'default',
+                        fps: cameraOptions.fps,
+                        fpsSelection: cameraOptions.fpsSelection,
+                        facingMode: camera === 'user' ? 'environment' : 'user',
+                    };
+                mediaConstraints = this.getVideoConstraints(deviceId);
                 this.peer_info.peer_video = true;
                 video = true;
                 break;
@@ -2427,7 +2444,17 @@ class RoomClient {
             } else {
                 stream = screen
                     ? await navigator.mediaDevices.getDisplayMedia(mediaConstraints)
-                    : await navigator.mediaDevices.getUserMedia(mediaConstraints);
+                    : video
+                      ? await CameraCapture.acquire(cameraOptions)
+                      : await navigator.mediaDevices.getUserMedia(mediaConstraints);
+                if (video) {
+                    rawCameraStream = stream;
+                    if (videoGeneration !== this.videoCaptureGeneration) {
+                        rawCameraStream.getTracks().forEach((track) => track.stop());
+                        return;
+                    }
+                    this.cameraRawStream = rawCameraStream;
+                }
 
                 // Handle Virtual Background and Blur using MediaPipe
                 if (video && isMediaStreamTrackAndTransformerSupported) {
@@ -2452,6 +2479,11 @@ class RoomClient {
                 }
             }
 
+            if (video && videoGeneration !== this.videoCaptureGeneration) {
+                stream.getTracks().forEach((track) => track.stop());
+                rawCameraStream?.getTracks().forEach((track) => track.stop());
+                return;
+            }
             if (managedMicrophone) {
                 if (captureGeneration !== this.audioCaptureGeneration) {
                     stream.getTracks().forEach((track) => track.stop());
@@ -2513,7 +2545,10 @@ class RoomClient {
             }
 
             if (video) {
-                const { encodings, codec } = this.getWebCamEncoding();
+                const { encodings, codec } = this.getWebCamEncoding({
+                    ...rawCameraStream?.getVideoTracks()[0]?.getSettings(),
+                    ...track.getSettings(),
+                });
                 console.log('GET WEBCAM ENCODING', {
                     encodings: encodings,
                     codecs: codec,
@@ -2545,9 +2580,13 @@ class RoomClient {
 
             const producer = await this.producerTransport.produce(params);
 
-            if (managedMicrophone && captureGeneration !== this.audioCaptureGeneration) {
+            if (
+                (managedMicrophone && captureGeneration !== this.audioCaptureGeneration) ||
+                (video && videoGeneration !== this.videoCaptureGeneration)
+            ) {
                 producer.close();
                 stream.getTracks().forEach((track) => track.stop());
+                rawCameraStream?.getTracks().forEach((track) => track.stop());
                 this.socket.emit('producerClosed', { producer_id: producer.id, type, status: false });
                 return;
             }
@@ -2575,7 +2614,16 @@ class RoomClient {
                 if (video) {
                     this.localVideoElement = elem;
                     this.videoProducerId = producer.id;
-                    camera = detectCameraFacingMode(stream);
+                    camera = detectCameraFacingMode(this.cameraRawStream || stream);
+                    const settings = (this.cameraRawStream || stream).getVideoTracks()[0].getSettings();
+                    this.lastCameraConfig = {
+                        ...cameraOptions,
+                        deviceId: settings.deviceId || deviceId,
+                        facingMode: undefined,
+                    };
+                    if (settings.deviceId) videoSelect.value = settings.deviceId;
+                    videoQuality.value = cameraOptions.quality;
+                    CameraCapture.showStatus(cameraOptions.quality, settings);
                     handleCameraMirror(elem);
                 }
 
@@ -2641,6 +2689,14 @@ class RoomClient {
                 this.stopManagedAudioCapture();
                 this.managedAudioError = 'Microphone unavailable. Check permission and recording status.';
                 this.renderManagedAudio();
+            }
+            if (video) {
+                stream?.getTracks().forEach((track) => track.stop());
+                rawCameraStream?.getTracks().forEach((track) => track.stop());
+                if (this.cameraRawStream === rawCameraStream) this.cameraRawStream = null;
+                this.lastCameraError = err;
+                // A camera reconfiguration owns recovery and its user feedback.
+                if (this.cameraRestartPending) return;
             }
             console.error('Produce error:', err);
             handleMediaError(type, err);
@@ -3043,16 +3099,6 @@ class RoomClient {
         };
     }
 
-    getCameraConstraints() {
-        camera = camera == 'user' ? 'environment' : 'user';
-        if (camera != 'user') this.camVideo = { facingMode: { exact: camera } };
-        else this.camVideo = true;
-        return {
-            audio: false,
-            video: this.camVideo,
-        };
-    }
-
     getResolutionMap() {
         return {
             qvga: [320, 240],
@@ -3067,27 +3113,14 @@ class RoomClient {
     }
 
     getVideoConstraints(deviceId) {
-        const selectedValue = this.getSelectedIndexValue(videoFps);
-        const customFrameRate = parseInt(selectedValue, 10);
-
-        const resolutionMap = this.getResolutionMap();
-
-        // Default to HD
-        const [width, height] = resolutionMap[videoQuality.value] || [1280, 720];
-
-        const constraints = {
-            width: { ideal: width },
-            height: { ideal: height },
-            frameRate: { ideal: customFrameRate || 30 },
-        };
-
-        if (deviceId) {
-            constraints.deviceId = { exact: deviceId };
-        }
-
+        const size = this.getResolutionMap()[videoQuality.value];
         return {
             audio: false,
-            video: constraints,
+            video: {
+                ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+                ...(size ? { width: { exact: size[0] }, height: { exact: size[1] } } : {}),
+                frameRate: { ideal: parseInt(videoFps.value, 10) || 30 },
+            },
         };
     }
 
@@ -3116,7 +3149,7 @@ class RoomClient {
     // WEBCAM ENCODING
     // ####################################################
 
-    getWebCamEncoding() {
+    getWebCamEncoding(settings = {}) {
         let encodings;
         let codec;
 
@@ -3189,6 +3222,10 @@ class RoomClient {
                 }
             }
         }
+        encodings = (encodings || [{}]).map((encoding) => ({
+            ...encoding,
+            maxBitrate: CameraCapture.bitrate(settings, encoding.scaleResolutionDownBy || 1),
+        }));
         return { encodings, codec };
     }
 
@@ -3376,7 +3413,53 @@ class RoomClient {
         return this.producerLabel.has(type);
     }
 
+    async restartCamera(deviceId, swapCamera) {
+        if (this.cameraRestartPending) return;
+        this.cameraRestartPending = true;
+        const controls = [videoQuality, videoSelect, videoFps];
+        controls.forEach((control) => {
+            control.disabled = true;
+        });
+        const previous = this.lastCameraConfig;
+        this.closeProducer(mediaType.video, 'change camera quality');
+        const generation = this.videoCaptureGeneration;
+        try {
+            this.lastCameraError = null;
+            let producer;
+            try {
+                producer = await this.produce(mediaType.video, deviceId, swapCamera);
+            } catch (error) {
+                this.lastCameraError ||= error;
+            }
+            if (!producer && generation === this.videoCaptureGeneration) {
+                if (previous && !CameraCapture.denied(this.lastCameraError || {})) {
+                    videoQuality.value = previous.quality;
+                    videoSelect.value = previous.deviceId;
+                    videoFps.value = previous.fpsSelection || String(previous.fps);
+                    try {
+                        producer = await this.produce(mediaType.video, previous.deviceId, false, false, previous);
+                    } catch (error) {
+                        this.lastCameraError = error;
+                    }
+                }
+                this.userLog?.(
+                    producer ? 'warning' : 'error',
+                    producer
+                        ? '无法应用所选摄像头设置，已恢复上次可用配置。'
+                        : '无法开启摄像头，请检查设备权限或选择其他画质。',
+                    5000
+                );
+            }
+        } finally {
+            this.cameraRestartPending = false;
+            controls.forEach((control) => {
+                control.disabled = false;
+            });
+        }
+    }
+
     closeThenProduce(type, deviceId = null, swapCamera = false) {
+        if (type === mediaType.video) return this.restartCamera(deviceId, swapCamera);
         const previousCamera = camera;
         this.closeProducer(type, 'closeThenProduce');
         const captureGeneration = this.audioCaptureGeneration;
@@ -3696,6 +3779,12 @@ class RoomClient {
     }
 
     closeProducer(type, event = 'Close Producer') {
+        if (type === mediaType.video) {
+            this.videoCaptureGeneration++;
+            this.cameraRawStream?.getTracks().forEach((track) => track.stop());
+            this.cameraRawStream = null;
+            CameraCapture.showStatus(videoQuality.value);
+        }
         if (!this.producerLabel.has(type)) {
             return console.warn('There is no producer for this type ' + type);
         }

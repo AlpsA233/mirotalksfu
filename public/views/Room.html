@@ -137,6 +137,7 @@
         <script defer src="../js/FixWebmDuration.js"></script>
         <script defer src="../js/WakeLock.js"></script>
         <script defer src="../js/RoomTemplate.js"></script>
+        <script defer src="../js/CameraCapture.js"></script>
         <script defer src="../js/RoomClient.js"></script>
         <script defer src="../js/Room.js"></script>
     </head>
@@ -781,7 +782,7 @@
                             <p>Video Quality:</p>
                         </div>
                         <select id="videoQuality" class="form-select text-light bg-dark">
-                            <option value="default">🎥&nbsp;Default</option>
+                            <option value="default">🎥&nbsp;自动最高</option>
                             <option value="qvga">🎥&nbsp;Low (320×240)</option>
                             <option value="vga">🎥&nbsp;Standard (640×480)</option>
                             <option value="hd">🎥&nbsp;HD (720p)</option>
@@ -791,6 +792,7 @@
                             <option value="6k">🎥&nbsp;6k</option>
                             <option value="8k">🎥&nbsp;8K</option>
                         </select>
+                        <div id="cameraCaptureStatus" role="status" aria-live="polite">自动最高 · 下次开启时生效</div>
                         <br />
                         <div id="ScreenQualityDiv" class="hidden">
                             <div class="title">
@@ -826,7 +828,7 @@
                         </div>
                         <br />
                         <select id="videoFps" class="form-select text-light bg-dark">
-                            <option value="max">Maximum</option>
+                            <option value="max">自动（目标 30 fps）</option>
                             <option value="60">60 fps</option>
                             <option value="30">30 fps</option>
                             <option value="15">15 fps</option>

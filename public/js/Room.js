@@ -3133,26 +3133,19 @@ function refreshLsDevices() {
 }
 
 async function changeCamera(deviceId) {
+    const previous = initStream?.getVideoTracks()[0]?.getSettings();
     if (initStream) {
         await stopTracks(initStream);
         elemDisplay('initVideo', true);
         elemDisplay('initVideoLoader', true, 'flex');
         initVideoContainerShow();
     }
-    const videoConstraints = {
-        audio: false,
-        video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            deviceId: { exact: deviceId },
-            aspectRatio: 1.777,
-        },
-    };
-    await navigator.mediaDevices
-        .getUserMedia(videoConstraints)
+    videoQuality.value = 'default';
+    await CameraCapture.acquire({ deviceId, fps: parseInt(videoFps.value, 10) || 30 })
         .then(async (camStream) => {
             initVideo.srcObject = camStream;
             initStream = camStream;
+            CameraCapture.showStatus('default', camStream.getVideoTracks()[0].getSettings());
             console.log(
                 '04.5 ----> Success attached init cam video stream',
                 initStream.getVideoTracks()[0].getSettings()
@@ -3163,7 +3156,26 @@ async function changeCamera(deviceId) {
             elemDisplay('initVideoLoader', false);
             isInitVideoLoaded = true;
         })
-        .catch((error) => {
+        .catch(async (error) => {
+            if (previous?.deviceId && !CameraCapture.denied(error)) {
+                try {
+                    initStream = await CameraCapture.acquire({
+                        deviceId: previous.deviceId,
+                        fps: parseInt(videoFps.value, 10) || 30,
+                    });
+                    initVideo.srcObject = initStream;
+                    initVideoSelect.value = previous.deviceId;
+                    videoSelect.value = previous.deviceId;
+                    CameraCapture.showStatus('default', initStream.getVideoTracks()[0].getSettings());
+                    camera = detectCameraFacingMode(initStream);
+                    handleCameraMirror(initVideo);
+                    elemDisplay('initVideoLoader', false);
+                    isInitVideoLoaded = true;
+                    return;
+                } catch {
+                    /* Report the original failure if restoration is unavailable. */
+                }
+            }
             console.error('[Error] changeCamera', error);
             handleMediaError('video/audio', error, '/');
             isInitVideoLoaded = false;
@@ -3210,7 +3222,7 @@ function handleMediaError(mediaType, err, redirectURL = false) {
         case 'ConstraintNotSatisfiedError':
             errMessage = 'Constraints cannot be satisfied by available devices';
             if (videoQuality.selectedIndex != 0) {
-                videoQuality.selectedIndex = rc.videoQualitySelectedIndex;
+                videoQuality.selectedIndex = rc?.videoQualitySelectedIndex || 0;
             }
             break;
         case 'NotAllowedError':
@@ -3518,13 +3530,15 @@ function handleSelects() {
         // Only reset the selected video quality on a genuine user-initiated device change.
         // A new camera may not support the previously chosen resolution, so fall back to default.
         // Programmatic calls (e.g. applyVirtualBackground) pass no event and must keep the quality.
-        if (e && e.isTrusted) videoQuality.selectedIndex = 0;
+        if (e && videoSelect.value !== rc.lastCameraConfig?.deviceId) videoQuality.selectedIndex = 0;
         // If video is currently OFF, just update selection for the next start.
         if (video) rc.closeThenProduce(RoomClient.mediaType.video, videoSelect.value);
+        else CameraCapture.showStatus(videoQuality.value);
         refreshLsDevices();
     };
     videoQuality.onchange = () => {
-        rc.closeThenProduce(RoomClient.mediaType.video, videoSelect.value);
+        if (video) rc.closeThenProduce(RoomClient.mediaType.video, videoSelect.value);
+        else CameraCapture.showStatus(videoQuality.value);
     };
     screenQuality.onchange = () => {
         rc.closeThenProduce(RoomClient.mediaType.screen);
@@ -3534,8 +3548,8 @@ function handleSelects() {
         localStorageSettings.screen_optimization = screenOptimization.selectedIndex;
         lS.setSettings(localStorageSettings);
     };
-    videoFps.onchange = () => {
-        rc.closeThenProduce(RoomClient.mediaType.video, videoSelect.value);
+    videoFps.onchange = async () => {
+        if (video) await rc.closeThenProduce(RoomClient.mediaType.video, videoSelect.value);
         localStorageSettings.video_fps = videoFps.selectedIndex;
         lS.setSettings(localStorageSettings);
     };

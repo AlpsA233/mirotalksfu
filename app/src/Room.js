@@ -632,7 +632,12 @@ module.exports = class Room {
         }
 
         const { id, type, iceParameters, iceCandidates, dtlsParameters, sctpParameters } = transport;
-        const { maxIncomingBitrate, minimumAvailableOutgoingBitrate } = this.webRtcTransport;
+        const { minimumAvailableOutgoingBitrate } = this.webRtcTransport;
+        const configuredIncoming = Number(
+            process.env.SFU_MAX_INCOMING_BITRATE ?? this.webRtcTransport.maxIncomingBitrate ?? 100000000
+        );
+        const maxIncomingBitrate =
+            Number.isFinite(configuredIncoming) && configuredIncoming > 0 ? configuredIncoming : 100000000;
 
         if (maxIncomingBitrate) {
             try {

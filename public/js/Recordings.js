@@ -67,6 +67,10 @@
         pollTimer,
         refreshTimer,
         toastTimer;
+    let desiredQuality = 'source',
+        currentMedia = null,
+        pendingRestore = null,
+        statsTimer;
     let offset = 0,
         statusFilter = '',
         search = '',
@@ -147,6 +151,7 @@
         clearTimeout(refreshTimer);
         clearTimeout(pollTimer);
         activeToken++;
+        clearInterval(statsTimer);
         player?.pause();
         $('login').hidden = false;
         $('content').hidden = true;
@@ -356,53 +361,161 @@
         button.onclick = () => selectAngle(view.id);
         return button;
     }
+    function qualityLabel(item) {
+        return `${item.label || (item.id === 'source' ? '源分辨率' : item.id)}${item.width && item.height ? ` · ${item.width}×${item.height}` : ''}`;
+    }
+    function showQualityProgress(message, failed = false) {
+        $('qualityProgress').hidden = !message;
+        $('qualityMessage').textContent = message || '';
+        $('retryQuality').hidden = !failed;
+    }
+    function detailRows(node, rows) {
+        node.replaceChildren(...rows.flatMap(([key, value]) => [el('dt', '', key), el('dd', '', value ?? '不可用')]));
+    }
+    function refreshStats() {
+        if ($('videoDetails').hidden) return;
+        const media = currentMedia?.metadata || {};
+        const size = (w, h) => (w && h ? `${w}×${h}` : null);
+        const fixed = (v, suffix) => (Number.isFinite(v) && v > 0 ? `${Math.round(v * 100) / 100}${suffix}` : null);
+        detailRows($('fileDetails'), [
+            ['分辨率', size(media.width, media.height)],
+            ['平均帧率', fixed(media.fps, ' fps')],
+            ['视频 / 音频编码', `${media.videoCodec || '不可用'} / ${media.audioCodec || '不可用'}`],
+            [
+                '平均总码率',
+                media.bitrate
+                    ? `${(media.bitrate / 1000000).toFixed(2)} Mbps${media.bitrateEstimated ? '（估算）' : ''}`
+                    : null,
+            ],
+            ['时长', media.duration ? duration(media.duration) : null],
+            ['文件大小', fixed(media.bytes / 1048576, ' MiB')],
+            [
+                '采样率 / 声道',
+                `${media.sampleRate ? `${media.sampleRate} Hz` : '不可用'} / ${media.channels || '不可用'}`,
+            ],
+            [
+                '录制来源分辨率',
+                [...new Set((media.recordingSources || []).map((s) => size(s.width, s.height)).filter(Boolean))].join(
+                    '、'
+                ) || null,
+            ],
+        ]);
+        let frames;
+        try {
+            frames = player.getVideoPlaybackQuality?.();
+        } catch {
+            /* Optional browser API. */
+        }
+        let buffered = 0;
+        for (let i = 0; i < player.buffered.length; i++) {
+            if (player.buffered.start(i) <= player.currentTime && player.buffered.end(i) >= player.currentTime)
+                buffered = player.buffered.end(i) - player.currentTime;
+        }
+        const rect = player.getBoundingClientRect();
+        detailRows($('playbackStats'), [
+            ['当前清晰度', currentMedia ? qualityLabel({ id: currentMedia.quality || 'source', ...media }) : null],
+            ['实际播放尺寸', size(player.videoWidth, player.videoHeight)],
+            ['播放器尺寸', size(Math.round(rect.width), Math.round(rect.height))],
+            ['缓冲', `${buffered.toFixed(1)} 秒`],
+            ['总帧数', frames?.totalVideoFrames],
+            ['丢帧数', frames?.droppedVideoFrames],
+        ]);
+    }
+    function setDetails(open) {
+        $('videoDetails').hidden = !open;
+        $('toggleDetails').setAttribute('aria-expanded', String(open));
+        clearInterval(statsTimer);
+        if (open) {
+            refreshStats();
+            statsTimer = setInterval(refreshStats, 1000);
+        }
+    }
+    function playbackPosition() {
+        return pendingRestore && player.readyState < 1
+            ? pendingRestore
+            : { at: selectedStart + (player.currentTime || 0) * 1000, playing: !player.paused };
+    }
     function bindMedia(status, view, token, resumeAt, resumePlaying) {
         if (token !== activeToken) return;
+        const volume = player.volume,
+            muted = player.muted,
+            rate = player.playbackRate || Number($('playbackRate').value);
+        const previous = activeAsset ? { assetId: activeAsset, media: currentMedia, start: selectedStart } : null;
         activeAsset = status.assetId;
-        selectedStart = status.started_at || current.started_at;
+        currentMedia = status;
+        selectedStart = status.started_at ?? current.started_at;
+        $('qualityControl').hidden = status.metadata ? !status.metadata.videoCodec : view.kind === 'audio';
+        const choices = status.qualities || [{ id: 'source', label: '源分辨率' }];
+        $('playbackQuality').replaceChildren(
+            ...choices.map((choice) => {
+                const option = el('option', '', qualityLabel(choice));
+                option.value = choice.id;
+                return option;
+            })
+        );
+        $('playbackQuality').value = status.quality || 'source';
+        $('playbackQuality').disabled = false;
         if (status.posterAssetId) player.poster = assetUrl(status.posterAssetId);
         else player.removeAttribute('poster');
-        player.src = assetUrl(status.assetId);
-        player.playbackRate = Number($('playbackRate').value);
+        pendingRestore = { at: resumeAt, playing: resumePlaying };
         player.onloadedmetadata = () => {
-            if (token !== activeToken) return;
+            if (activeAsset !== status.assetId) return;
             const seek = Math.max(0, (resumeAt - selectedStart) / 1000);
-            // A zero-second seek hides the poster before playback and exposes
-            // the legitimate black lead-in of a late-starting camera.
-            if (seek > 0.02 && Number.isFinite(player.duration) && seek < player.duration) player.currentTime = seek;
+            if (seek > 0.02 && Number.isFinite(player.duration))
+                player.currentTime = Math.min(seek, Math.max(0, player.duration - 0.01));
+            player.playbackRate = rate;
+            player.volume = volume;
+            player.muted = muted;
             $('playerOverlay').hidden = true;
+            pendingRestore = null;
             if (resumePlaying) player.play().catch(() => toast('点击播放按钮即可开始观看'));
+            refreshStats();
         };
         player.onerror = () => {
-            if (token === activeToken) overlay('暂时无法播放', '请重试，或下载回放后在本地观看。', { retry: true });
+            if (token !== activeToken) return;
+            if (previous && previous.assetId !== status.assetId) {
+                activeAsset = null;
+                bindMedia(previous.media, view, token, resumeAt, resumePlaying);
+                showQualityProgress('该画质暂时无法播放，已恢复之前的画质。', true);
+            } else overlay('暂时无法播放', '请重试，或下载回放后在本地观看。', { retry: true });
         };
-        $('audioArtwork').hidden = view.kind !== 'audio';
+        player.src = assetUrl(status.assetId);
+        player.playbackRate = rate;
+        $('audioArtwork').hidden = status.metadata ? Boolean(status.metadata.videoCodec) : view.kind !== 'audio';
         $('audioAvatar').textContent = Array.from(view.name || '?')[0];
         $('audioName').textContent = view.name;
         $('download').href = `${assetUrl(status.assetId)}?download=1`;
-        $('download').setAttribute('download', `${current.room_id}-${view.name}.mp4`);
+        $('download').setAttribute('download', `${current.room_id}-${view.name}-${status.quality || 'source'}.mp4`);
+        $('download').textContent =
+            `下载当前画质（${status.quality === 'source' || !status.quality ? '源分辨率' : status.quality}）`;
         $('download').classList.remove('disabled');
         $('download').setAttribute('aria-disabled', 'false');
+        refreshStats();
     }
-    async function selectAngle(id, retry = false) {
+    async function selectAngle(id, retry = false, qualityOnly = false) {
         const token = ++activeToken;
         clearTimeout(pollTimer);
-        const resumeAt = selectedStart + (player.currentTime || 0) * 1000,
-            resumePlaying = !player.paused;
-        player.pause();
-        player.removeAttribute('src');
-        player.removeAttribute('poster');
-        player.load();
-        activeAsset = null;
+        const { at: resumeAt, playing: resumePlaying } = playbackPosition();
+        if (!qualityOnly) {
+            player.pause();
+            player.removeAttribute('src');
+            player.removeAttribute('poster');
+            player.load();
+            activeAsset = null;
+            currentMedia = null;
+            pendingRestore = null;
+            $('playbackQuality').disabled = true;
+            disableDownload();
+            $('audioArtwork').hidden = true;
+        }
         selectedId = id;
         updateAngles();
-        disableDownload();
-        $('audioArtwork').hidden = true;
         const view =
             id === 'composition'
                 ? { name: '会议总览', kind: 'composition', ready: true, has_audio: true }
                 : current.views.find((item) => item.id === id);
         if (!view) return;
+        $('qualityControl').hidden = view.kind === 'audio';
         $('angleTitle').textContent = `${view.name}${view.kind === 'screen' ? ' · 屏幕共享' : ''}`;
         $('syncLabel').textContent =
             view.kind === 'audio' ? '完整音频回放' : view.has_audio ? '画面与声音同步' : '本视角没有录制声音';
@@ -414,37 +527,37 @@
             overlay('录像正在整理中', '音视频准备完成后，这里就可以一起播放。');
             return;
         }
-        overlay(
-            id === 'composition' ? '正在载入会议总览' : '正在准备同步回放',
-            '首次观看需要短暂整理，完成后可以直接回看。',
-            { loading: true }
-        );
-        if (id === 'composition') {
-            bindMedia({ assetId: 'composition', started_at: current.started_at }, view, token, resumeAt, resumePlaying);
-            return;
-        }
+        if (!qualityOnly) overlay('正在准备同步回放', '首次观看需要整理，完成后可以直接回看。', { loading: true });
+        showQualityProgress(qualityOnly ? '正在准备所选画质，当前回放可继续播放…' : '');
+        const requestedQuality = desiredQuality;
         let attempt = 0;
         const poll = async () => {
             try {
+                const retryRequest = retry && attempt === 0;
+                const url = `${base}/playback/${encodeURIComponent(id)}`;
                 const status = await request(
-                    `${base}/playback/${encodeURIComponent(id)}`,
-                    shared ? {} : { method: 'POST', body: JSON.stringify({ retry: retry && attempt === 0 }) }
+                    shared ? `${url}?quality=${encodeURIComponent(requestedQuality)}&retry=${retryRequest}` : url,
+                    shared
+                        ? {}
+                        : { method: 'POST', body: JSON.stringify({ retry: retryRequest, quality: requestedQuality }) }
                 );
                 if (token !== activeToken) return;
                 attempt++;
                 if (status.state === 'ready') {
-                    bindMedia(status, view, token, resumeAt, resumePlaying);
+                    // Read at completion, since viewers may seek, pause or change speed while transcoding.
+                    const latest = playbackPosition();
+                    const latestAt = qualityOnly ? latest.at : resumeAt;
+                    const latestPlaying = qualityOnly ? latest.playing : resumePlaying;
+                    bindMedia(status, view, token, latestAt, latestPlaying);
+                    showQualityProgress('');
                     return;
                 }
-                if (status.state === 'failed') {
-                    overlay('回放准备失败', status.error || '请稍后重试。', { retry: !shared });
-                    return;
-                }
-                if (attempt > 15)
-                    $('overlayText').textContent = '这场会议较长，仍在整理音画。你可以先浏览其他录像，稍后回来观看。';
+                if (status.state === 'failed') throw new Error(status.error || '画质生成失败，请重试。');
                 pollTimer = setTimeout(poll, Math.min(1500 + attempt * 100, 4000));
             } catch (error) {
-                if (token === activeToken) overlay('回放暂时不可用', error.message, { retry: !shared });
+                if (token !== activeToken) return;
+                if (qualityOnly) showQualityProgress(error.message, true);
+                else overlay('回放暂时不可用', error.message, { retry: true });
             }
         };
         await poll();
@@ -479,6 +592,7 @@
         clearTimeout(refreshTimer);
         try {
             const previous = current?.views?.find((view) => view.id === selectedId);
+            const previousComposition = current?.composition_updated_at;
             current = await request(base);
             $('detailError').hidden = true;
             $('detailContent').hidden = false;
@@ -490,7 +604,9 @@
                         : current.views.find((view) => view.ready)?.id || current.views[0]?.id;
                 if (first) await selectAngle(first);
                 else overlay('没有可播放的内容', '这场会议尚未保存音视频，或录制未能完成。');
-            } else if (previous && !previous.ready && current.views.find((view) => view.id === selectedId)?.ready)
+            } else if (selectedId === 'composition' && previousComposition !== current.composition_updated_at)
+                await selectAngle(selectedId);
+            else if (previous && !previous.ready && current.views.find((view) => view.id === selectedId)?.ready)
                 await selectAngle(selectedId);
             if (shared ? current.views.some((view) => !view.ready) : !current.can_delete)
                 refreshTimer = setTimeout(() => loadDetail(), 6000);
@@ -620,6 +736,13 @@
             player.playbackRate = Number($('playbackRate').value);
         };
         $('retryPlayback').onclick = () => selectAngle(selectedId, true);
+        $('playbackQuality').onchange = () => {
+            desiredQuality = $('playbackQuality').value;
+            selectAngle(selectedId, false, Boolean(activeAsset));
+        };
+        $('retryQuality').onclick = () => selectAngle(selectedId, true, Boolean(activeAsset));
+        $('toggleDetails').onclick = () => setDetails($('videoDetails').hidden);
+        $('closeDetails').onclick = () => setDetails(false);
         if (!shared) {
             $('deleteMeeting').onclick = () => removeMeeting(current, $('deleteMeeting'));
             $('share').onclick = async () => {
@@ -660,6 +783,7 @@
         activeToken++;
         clearTimeout(pollTimer);
         clearTimeout(refreshTimer);
+        clearInterval(statsTimer);
         player?.pause();
     });
     window.addEventListener('pageshow', (event) => {

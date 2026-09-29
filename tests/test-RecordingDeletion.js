@@ -9,6 +9,7 @@ const path = require('node:path');
 const express = require('express');
 const sinon = require('sinon');
 const ManagedRecording = require('../app/src/ManagedRecording');
+const { MEDIA_VERSION } = require('../app/src/RecordingMedia');
 const { createRecordingRouter } = require('../app/src/RecordingHttp');
 
 describe('recording deletion', function () {
@@ -84,6 +85,35 @@ describe('recording deletion', function () {
     function remove(id = 'meeting', headers = { Cookie: cookie, 'X-CSRF-Token': csrf }) {
         return fetch(`${base}/api/admin/recordings/${encodeURIComponent(id)}`, { method: 'DELETE', headers });
     }
+
+    it('protects derived assets with sessions and revocable shares and cascades their metadata', async () => {
+        const directory = fixture();
+        const sourceVersion = `${manager.getMeeting('meeting').views[0].assetId}-${MEDIA_VERSION}`;
+        fs.mkdirSync(path.join(directory, 'qualities'));
+        fs.writeFileSync(path.join(directory, 'qualities/360.mp4'), 'derived video');
+        manager.store.saveAsset('meeting', {
+            assetId: 'derived',
+            sourceVersion,
+            quality: '360p',
+            path: 'qualities/360.mp4',
+            state: 'ready',
+            metadata: { width: 640, height: 360 },
+        });
+        const adminUrl = `${base}/api/admin/recordings/meeting/assets/derived`;
+        const publicUrl = `${base}/api/public/recordings/meeting-share/${secret}/assets/derived`;
+        assert.equal((await fetch(adminUrl)).status, 401);
+        assert.equal((await fetch(adminUrl, { headers: { Cookie: cookie } })).status, 200);
+        assert.equal((await fetch(publicUrl)).status, 200);
+        manager.store.revokeShare('meeting-share', Date.now());
+        assert.equal((await fetch(publicUrl)).status, 404);
+        assert.equal(
+            (await fetch(`${base}/api/public/recordings/meeting-share/${secret}/playback/view?quality=360p`)).status,
+            404
+        );
+        assert.equal((await remove()).status, 204);
+        assert.equal(manager.store.listAssets('meeting').length, 0);
+        assert(!fs.existsSync(directory));
+    });
 
     it('requires administrator authentication and a valid CSRF token', async () => {
         const directory = fixture();

@@ -2007,7 +2007,7 @@ module.exports = {
              */
             initialAvailableOutgoingBitrate: 2500000, // 2.5 Mbps initial bitrate
             minimumAvailableOutgoingBitrate: 1000000, // 1 Mbps minimum guaranteed
-            maxIncomingBitrate: 3000000, // 3 Mbps max per producer
+            maxIncomingBitrate: Number(process.env.SFU_MAX_INCOMING_BITRATE) || 100000000, // 100 Mbps per sending transport
 
             /**
              * Data Channel Settings (mediasoup 3.20.0+)

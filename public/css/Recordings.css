@@ -2157,3 +2157,71 @@ body[data-page='share'] .topbar .brand-mark {
         margin-top: 0;
     }
 }
+
+/* File details sit over the video on desktop and fold below it on phones. */
+.player-card {
+    position: relative;
+}
+.player-footer {
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.video-details {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 5;
+    width: min(460px, calc(100% - 24px));
+    max-height: calc(100% - 100px);
+    overflow: auto;
+    padding: 16px;
+    background: rgba(12, 17, 26, 0.94);
+    color: #edf2fa;
+    border: 1px solid #455166;
+    border-radius: 12px;
+    font-size: 12px;
+}
+.video-details h3 {
+    margin: 6px 0 10px;
+    font-size: 14px;
+}
+.statistics-grid {
+    display: grid;
+    grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr);
+    gap: 6px 12px;
+    margin: 0 0 12px;
+}
+.statistics-grid dt {
+    color: #aebbd0;
+}
+.statistics-grid dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+}
+.quality-progress {
+    padding: 12px 16px;
+    background: var(--surface);
+    border-radius: 10px;
+    margin: 12px 0;
+}
+.quality-progress button {
+    margin-left: 12px;
+}
+#playbackQuality {
+    max-width: 230px;
+}
+@media (max-width: 700px) {
+    .video-details {
+        position: static;
+        width: auto;
+        max-height: 420px;
+        margin: 10px;
+    }
+    .player-footer > div {
+        flex-basis: 100%;
+    }
+    #playbackQuality {
+        max-width: 195px;
+    }
+}

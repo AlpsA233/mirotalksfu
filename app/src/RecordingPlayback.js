@@ -6,6 +6,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const run = promisify(execFile);
+const { probeMedia, playbackCanvas } = require('./RecordingMedia');
 
 // A viewing angle belongs to a connection, never to a display name: two people
 // may have the same name. Repeated camera/microphone segments share a timeline.
@@ -33,7 +34,7 @@ function playbackViews(meeting) {
             const id = crypto.createHash('sha256').update(`${key}:${kind}`).digest('hex').slice(0, 24);
             const version = crypto
                 .createHash('sha256')
-                .update('synchronized-playback-v7:')
+                .update('synchronized-playback-v8-native:')
                 .update(
                     JSON.stringify(
                         sources.map((track) => [
@@ -97,17 +98,14 @@ async function renderPlayback({ meeting, view, storageDir, ffmpegPath, ffprobePa
     const inputs = [];
     for (const track of view.sources) {
         const file = path.join(directory, track.playback_path);
-        const { stdout } = await run(
-            ffprobePath,
-            ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', file],
-            { timeout: 30000 }
-        );
-        const duration = Number(JSON.parse(stdout).format.duration);
+        const media = await probeMedia(file, ffprobePath);
+        const duration = media.duration;
         if (!Number.isFinite(duration) || duration <= 0) throw new Error('录制文件缺少有效时长');
-        inputs.push({ track, file, duration, offset: Math.max(0, track.started_at - view.started_at) / 1000 });
+        inputs.push({ track, file, media, duration, offset: Math.max(0, track.started_at - view.started_at) / 1000 });
     }
     const duration = Math.max(...inputs.map((input) => input.offset + input.duration));
     const videos = inputs.filter((input) => input.track.kind === 'video');
+    const canvas = playbackCanvas(videos.map((input) => input.media));
     const audio = inputs.filter((input) => input.track.kind === 'audio');
     const normalizedAudio = output.replace(/\.mp4$/, '.audio.flac');
     const args = ['-nostdin', '-y', '-loglevel', 'error', '-filter_complex_threads', '1'];
@@ -115,10 +113,10 @@ async function renderPlayback({ meeting, view, storageDir, ffmpegPath, ffprobePa
     if (audio.length) args.push('-i', normalizedAudio);
     const filters = [];
     if (videos.length) {
-        filters.push(`color=c=0x10131a:s=1280x720:r=30:d=${duration}[base0]`);
+        filters.push(`color=c=0x10131a:s=${canvas.width}x${canvas.height}:r=${canvas.fps}:d=${duration}[base0]`);
         videos.forEach((input, index) => {
             filters.push(
-                `[${index}:v]fps=30,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS+${input.offset}/TB[v${index}]`
+                `[${index}:v]fps=${canvas.fps},pad=${canvas.width}:${canvas.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS+${input.offset}/TB[v${index}]`
             );
             filters.push(
                 `[base${index}][v${index}]overlay=eof_action=pass:repeatlast=0:enable='between(t,${input.offset},${input.offset + input.duration})'[base${index + 1}]`

@@ -64,6 +64,16 @@ class RecordingStore {
                 created_at INTEGER NOT NULL,
                 revoked_at INTEGER
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS recording_assets (
+                meeting_id TEXT NOT NULL REFERENCES recording_meetings(id) ON DELETE CASCADE,
+                asset_id TEXT NOT NULL,
+                source_version TEXT NOT NULL,
+                quality TEXT NOT NULL,
+                path TEXT NOT NULL,
+                state TEXT NOT NULL,
+                metadata_json TEXT,
+                PRIMARY KEY (meeting_id, asset_id)
+            ) STRICT;
             CREATE INDEX IF NOT EXISTS recording_meetings_started_at ON recording_meetings(started_at DESC);
             CREATE INDEX IF NOT EXISTS recording_tracks_meeting_id ON recording_tracks(meeting_id);
             CREATE INDEX IF NOT EXISTS recording_shares_meeting_id ON recording_shares(meeting_id);
@@ -225,6 +235,40 @@ class RecordingStore {
         return this.db
             .prepare('SELECT * FROM recording_tracks WHERE meeting_id = ? ORDER BY started_at ASC')
             .all(meetingId);
+    }
+
+    saveAsset(meetingId, asset) {
+        this.db
+            .prepare(
+                `INSERT INTO recording_assets
+            (meeting_id, asset_id, source_version, quality, path, state, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(meeting_id, asset_id) DO UPDATE SET state=excluded.state,
+            source_version=excluded.source_version, quality=excluded.quality,
+            path=excluded.path, metadata_json=excluded.metadata_json`
+            )
+            .run(
+                meetingId,
+                asset.assetId,
+                asset.sourceVersion,
+                asset.quality,
+                asset.path,
+                asset.state,
+                asset.metadata ? JSON.stringify(asset.metadata) : null
+            );
+    }
+
+    deleteAsset(meetingId, assetId) {
+        this.db.prepare('DELETE FROM recording_assets WHERE meeting_id = ? AND asset_id = ?').run(meetingId, assetId);
+    }
+
+    listAssets(meetingId, sourceVersion) {
+        const rows = sourceVersion
+            ? this.db
+                  .prepare('SELECT * FROM recording_assets WHERE meeting_id = ? AND source_version = ?')
+                  .all(meetingId, sourceVersion)
+            : this.db.prepare('SELECT * FROM recording_assets WHERE meeting_id = ?').all(meetingId);
+        return rows.map((row) => ({ ...row, metadata: row.metadata_json ? JSON.parse(row.metadata_json) : null }));
     }
 
     createShare({ id, meetingId, secretHash, createdAt }) {

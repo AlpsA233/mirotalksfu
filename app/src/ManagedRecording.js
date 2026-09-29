@@ -10,6 +10,8 @@ const { spawn } = require('node:child_process');
 const RecordingStore = require('./RecordingStore');
 const { playbackViews, describeViews, renderPlayback, normalizeAudio } = require('./RecordingPlayback');
 
+const { MEDIA_VERSION, probeMedia, qualities, validateQuality, transcodeQuality } = require('./RecordingMedia');
+
 const LOOPBACK = '127.0.0.1';
 
 function randomId() {
@@ -367,6 +369,7 @@ class ManagedRecording extends EventEmitter {
             producerId: track.producer.id,
             rtpCapabilities: track.meeting.room.router.rtpCapabilities,
             paused: true,
+            // Omitting preferredLayers subscribes to the highest available spatial/temporal layer.
         });
         track.consumer = consumer;
         track.recordingSsrc = consumer.rtpParameters.encodings[0]?.ssrc;
@@ -662,33 +665,134 @@ class ManagedRecording extends EventEmitter {
         return { ...meeting, views: describeViews(meeting), can_delete: this.canDeleteMeeting(meeting.id) };
     }
 
-    preparePlayback(meetingId, viewId, { retry = false } = {}) {
+    playbackSource(meeting, viewId) {
+        if (viewId !== 'composition') return playbackViews(meeting).find((view) => view.id === viewId);
+        if (!meeting.composition_path) return null;
+        const file = path.join(this.config.storageDir, meeting.id, meeting.composition_path);
+        if (!fs.existsSync(file)) return null;
+        const stat = fs.statSync(file);
+        const version = crypto
+            .createHash('sha256')
+            .update(`${meeting.composition_updated_at}:${stat.size}:${stat.mtimeMs}`)
+            .digest('hex')
+            .slice(0, 24);
+        return {
+            id: 'composition',
+            assetId: `composition-${version}`,
+            started_at: meeting.started_at,
+            ready: true,
+            file,
+            sources: meeting.tracks,
+        };
+    }
+
+    preparePlayback(meetingId, viewId, { retry = false, quality = 'source' } = {}) {
+        validateQuality(quality);
         const meeting = this.getMeeting(meetingId);
-        const view = meeting && playbackViews(meeting).find((item) => item.id === viewId);
-        if (!view) throw Object.assign(new Error('未找到此参与者的回放'), { statusCode: 404 });
+        const view = meeting && this.playbackSource(meeting, viewId);
+        if (!view) throw Object.assign(new Error('未找到此视角的回放'), { statusCode: 404 });
         if (this.deletingMeetings.has(meetingId) || !view.ready)
             throw Object.assign(new Error('录像仍在处理中，请稍后重试'), { statusCode: 409 });
-        const file = path.join(this.config.storageDir, meetingId, 'views', `${view.assetId}.mp4`);
-        if (fs.existsSync(file))
-            return {
-                state: 'ready',
-                assetId: view.assetId,
-                started_at: view.started_at,
-                posterAssetId: fs.existsSync(file.replace(/\.mp4$/, '.jpg')) ? `${view.assetId}-poster` : null,
-            };
-        const key = `${meetingId}/${view.assetId}`;
+        const directory = path.join(this.config.storageDir, meetingId);
+        const sourceVersion = `${view.assetId}-${MEDIA_VERSION}`;
+        const sourceFile = view.file || path.join(directory, 'views', `${view.assetId}.mp4`);
+        const assets = () => this.store.listAssets(meetingId, sourceVersion);
+        const usable = (row) => row?.state === 'ready' && row.metadata && fs.existsSync(path.join(directory, row.path));
+        const describe = (row, sourceMetadata) => ({
+            state: 'ready',
+            assetId: row.asset_id,
+            quality: row.quality,
+            started_at: view.started_at,
+            metadata: row.metadata,
+            qualities: qualities(sourceMetadata).map((q) => ({
+                ...q,
+                state: assets().find((a) => a.quality === q.id)?.state || 'available',
+            })),
+            posterAssetId:
+                !view.file && fs.existsSync(sourceFile.replace(/\.mp4$/, '.jpg')) ? `${view.assetId}-poster` : null,
+        });
+        const cachedSource = assets().find((row) => row.quality === 'source');
+        const effectiveQuality = usable(cachedSource)
+            ? qualities(cachedSource.metadata).find((q) => q.id === quality)?.id || 'source'
+            : quality;
+        const cached = assets().find((row) => row.quality === effectiveQuality);
+        if (usable(cached) && usable(cachedSource)) return describe(cached, cachedSource.metadata);
+        const key = `${meetingId}/${sourceVersion}/${effectiveQuality}`;
         const existing = this.playbackJobs.get(key);
-        if (existing && !(retry && existing.state === 'failed')) return existing;
-        const status = { state: 'processing', assetId: view.assetId, started_at: view.started_at };
+        if (existing && existing.state !== 'ready' && !(retry && existing.state === 'failed')) return existing;
+        const status = {
+            state: 'processing',
+            quality: effectiveQuality,
+            started_at: view.started_at,
+            ...(usable(cachedSource)
+                ? {
+                      assetId: cachedSource.asset_id,
+                      metadata: cachedSource.metadata,
+                      qualities: describe(cachedSource, cachedSource.metadata).qualities,
+                  }
+                : {}),
+        };
         this.playbackJobs.set(key, status);
+        const persist = (assetId, selectedQuality, file, state, metadata) =>
+            this.store.saveAsset(meetingId, {
+                assetId,
+                sourceVersion,
+                quality: selectedQuality,
+                path: path.relative(directory, file),
+                state,
+                metadata,
+            });
+        const requestedId = quality === 'source' ? view.assetId : `${sourceVersion}-${quality}`;
+        const requestedFile =
+            quality === 'source' ? sourceFile : path.join(directory, 'qualities', `${requestedId}.mp4`);
+        persist(requestedId, quality, requestedFile, 'processing', null);
         const run = async () => {
             try {
-                await renderPlayback({ meeting, view, ...this.config });
-                status.state = 'ready';
-                status.posterAssetId = fs.existsSync(file.replace(/\.mp4$/, '.jpg')) ? `${view.assetId}-poster` : null;
-            } catch {
+                if (this.playbackSource(this.getMeeting(meetingId), viewId)?.assetId !== view.assetId)
+                    throw new Error('Playback source changed while queued');
+                // Several qualities can be queued together. The first creates the source;
+                // later jobs reuse its file and metadata on this same serial queue.
+                if (!view.file) await renderPlayback({ meeting, view, ...this.config });
+                let sourceRow = assets().find((row) => row.quality === 'source');
+                if (!usable(sourceRow)) {
+                    const metadata = await probeMedia(sourceFile, this.config.ffprobePath);
+                    metadata.recordingSources = [];
+                    for (const track of view.sources.filter(
+                        (t) => t.kind === 'video' && t.state !== 'failed' && (t.playback_path || t.raw_path)
+                    )) {
+                        const file = path.join(directory, track.playback_path || track.raw_path);
+                        const media = await probeMedia(file, this.config.ffprobePath);
+                        metadata.recordingSources.push({ width: media.width, height: media.height, fps: media.fps });
+                    }
+                    persist(view.assetId, 'source', sourceFile, 'ready', metadata);
+                    sourceRow = assets().find((row) => row.quality === 'source');
+                }
+                const selected =
+                    qualities(sourceRow.metadata).find((q) => q.id === quality) || qualities(sourceRow.metadata)[0];
+                let row = sourceRow;
+                if (selected.id !== 'source') {
+                    row = assets().find((a) => a.quality === selected.id);
+                    if (!usable(row)) {
+                        if (!fs.existsSync(requestedFile))
+                            await transcodeQuality({
+                                source: sourceFile,
+                                output: requestedFile,
+                                quality: selected,
+                                ffmpegPath: this.config.ffmpegPath,
+                            });
+                        const metadata = await probeMedia(requestedFile, this.config.ffprobePath);
+                        metadata.recordingSources = sourceRow.metadata.recordingSources;
+                        persist(requestedId, selected.id, requestedFile, 'ready', metadata);
+                        row = assets().find((a) => a.quality === selected.id);
+                    }
+                }
+                if (selected.id === 'source' && quality !== 'source') this.store.deleteAsset(meetingId, requestedId);
+                Object.assign(status, describe(row, sourceRow.metadata));
+            } catch (error) {
+                persist(requestedId, quality, requestedFile, 'failed', null);
                 status.state = 'failed';
                 status.error = '回放准备失败，请重试。原始录像仍然保留。';
+                console.warn('[ManagedRecording] Playback preparation failed:', error.message);
             }
         };
         this.compositionQueue = this.startBackground(this.compositionQueue.then(run, run), meetingId);
@@ -727,6 +831,18 @@ class ManagedRecording extends EventEmitter {
     getAsset(meetingId, assetId, { publicOnly = false } = {}) {
         const meeting = this.getMeeting(meetingId);
         if (!meeting) return null;
+        const persisted = this.store
+            .listAssets(meetingId)
+            .find((row) => row.asset_id === assetId && row.state === 'ready');
+        if (persisted) {
+            const validSources = [...playbackViews(meeting), this.playbackSource(meeting, 'composition')].filter(
+                Boolean
+            );
+            if (!validSources.some((view) => persisted.source_version === `${view.assetId}-${MEDIA_VERSION}`))
+                return null;
+            const file = path.join(this.config.storageDir, meetingId, persisted.path);
+            return fs.existsSync(file) ? { path: file, type: 'video/mp4', public: true } : null;
+        }
         const poster = assetId.endsWith('-poster');
         const view = playbackViews(meeting).find((item) => item.assetId === (poster ? assetId.slice(0, -7) : assetId));
         if (view) {

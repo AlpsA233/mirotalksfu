@@ -113,6 +113,7 @@ function publicMeeting(manager, meeting) {
         ended_at: meeting.ended_at,
         state: meeting.state,
         composition_state: meeting.composition_state,
+        composition_updated_at: meeting.composition_updated_at,
         composition_available: Boolean(meeting.composition_path),
         views: describeViews(meeting),
         tracks: meeting.tracks
@@ -239,6 +240,7 @@ function createRecordingRouter({ manager, config, viewsDir }) {
         try {
             const status = manager.preparePlayback(req.params.meetingId, req.params.viewId, {
                 retry: req.body?.retry === true,
+                quality: req.body?.quality ?? 'source',
             });
             res.status(status.state === 'processing' ? 202 : 200).json(status);
         } catch (error) {
@@ -294,7 +296,10 @@ function createRecordingRouter({ manager, config, viewsDir }) {
         const share = shareForRequest(req);
         if (!share) return res.status(404).json({ error: 'Recording share not found' });
         try {
-            const status = manager.preparePlayback(share.meeting_id, req.params.viewId);
+            const status = manager.preparePlayback(share.meeting_id, req.params.viewId, {
+                quality: req.query.quality ?? 'source',
+                retry: req.query.retry === 'true',
+            });
             res.set('Cache-Control', 'no-store')
                 .status(status.state === 'processing' ? 202 : 200)
                 .json(status);

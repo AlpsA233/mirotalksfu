@@ -114,11 +114,35 @@
                                     <button id="retryPlayback" class="button secondary" hidden>重试</button>
                                 </div>
                             </div>
+                            <section id="videoDetails" class="video-details" aria-label="视频详情与播放统计" hidden>
+                                <div class="section-title">
+                                    <h3>视频详情</h3>
+                                    <button id="closeDetails" class="button secondary" aria-label="关闭视频详情">
+                                        关闭
+                                    </button>
+                                </div>
+                                <dl id="fileDetails" class="statistics-grid"></dl>
+                                <h3>播放统计</h3>
+                                <dl id="playbackStats" class="statistics-grid"></dl>
+                            </section>
                             <div class="player-footer">
                                 <div>
                                     <span class="playing-dot"></span><strong id="angleTitle">会议回放</strong
                                     ><span id="syncLabel" class="sync-label"></span>
                                 </div>
+                                <label id="qualityControl" class="speed-control"
+                                    >清晰度<select id="playbackQuality" aria-label="播放清晰度">
+                                        <option value="source">源分辨率</option>
+                                    </select></label
+                                >
+                                <button
+                                    id="toggleDetails"
+                                    class="button secondary"
+                                    aria-controls="videoDetails"
+                                    aria-expanded="false"
+                                >
+                                    视频详情
+                                </button>
                                 <label class="speed-control"
                                     >播放速度<select id="playbackRate" aria-label="播放速度">
                                         <option value="0.75">0.75×</option>
@@ -129,6 +153,10 @@
                                     </select></label
                                 >
                             </div>
+                        </div>
+                        <div id="qualityProgress" class="quality-progress" role="status" aria-live="polite" hidden>
+                            <span id="qualityMessage"></span
+                            ><button id="retryQuality" class="button secondary" hidden>重试</button>
                         </div>
                         <section class="about-card">
                             <div class="section-title">

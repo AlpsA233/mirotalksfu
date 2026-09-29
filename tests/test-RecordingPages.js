@@ -126,3 +126,201 @@ describe('recording pages', () => {
         }
     });
 });
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+const sourceStatus = {
+    state: 'ready',
+    assetId: 'source-asset',
+    quality: 'source',
+    started_at: 2000,
+    metadata: {
+        width: 1920,
+        height: 1080,
+        videoCodec: 'h264',
+        audioCodec: 'aac',
+        fps: 25,
+        bytes: 1000000,
+        duration: 90,
+        bitrate: 1000000,
+        recordingSources: [{ width: 1920, height: 1080 }],
+    },
+    qualities: [
+        { id: 'source', label: '源分辨率', width: 1920, height: 1080 },
+        { id: '720p', width: 1280, height: 720 },
+        { id: '480p', width: 852, height: 480 },
+    ],
+};
+const variant = (quality) => ({
+    ...sourceStatus,
+    assetId: quality,
+    quality,
+    metadata: {
+        ...sourceStatus.metadata,
+        width: quality === '720p' ? 1280 : 852,
+        height: quality === '720p' ? 720 : 480,
+    },
+});
+function choose(doc, quality) {
+    const select = doc.getElementById('playbackQuality');
+    select.value = quality;
+    select.onchange();
+}
+describe('playback quality controls', () => {
+    it('keeps playing during generation and switches at the latest position, pause state, rate and volume', async () => {
+        let complete;
+        const { dom, doc } = await page('recordingDetail.html', '/recordings/meeting', (url, options) => {
+            if (!url.includes('/playback/')) return;
+            const quality = JSON.parse(options.body).quality;
+            return quality === 'source'
+                ? sourceStatus
+                : new Promise((resolve) => {
+                      complete = resolve;
+                  });
+        });
+        try {
+            const player = doc.getElementById('player');
+            Object.defineProperty(player, 'duration', { value: 90 });
+            Object.defineProperty(player, 'paused', { value: false, writable: true });
+            let plays = 0,
+                pauses = 0;
+            player.play = async () => {
+                plays++;
+                player.paused = false;
+            };
+            player.pause = () => {
+                pauses++;
+                player.paused = true;
+            };
+            player.onloadedmetadata();
+            player.currentTime = 10;
+            choose(doc, '720p');
+            await tick();
+            assert(player.src.endsWith('/source-asset'));
+            assert.equal(pauses, 0);
+            assert.equal(doc.getElementById('qualityProgress').hidden, false);
+            // User interaction during generation must win over the original switch position.
+            player.currentTime = 37;
+            player.paused = true;
+            player.playbackRate = 1.5;
+            player.volume = 0.3;
+            complete(variant('720p'));
+            await tick();
+            player.currentTime = 0;
+            player.onloadedmetadata();
+            assert.equal(player.currentTime, 37);
+            assert.equal(player.paused, true);
+            assert.equal(plays, 0);
+            assert.equal(player.playbackRate, 1.5);
+            assert.equal(player.volume, 0.3);
+            assert(doc.getElementById('download').href.endsWith('/assets/720p?download=1'));
+            assert(doc.getElementById('download').textContent.includes('720p'));
+        } finally {
+            dom.window.close();
+        }
+    });
+    it('applies only the last selection even if earlier replies finish later', async () => {
+        const pending = {};
+        const { dom, doc } = await page('recordingDetail.html', '/recordings/meeting', (url, options) => {
+            if (!url.includes('/playback/')) return;
+            const quality = JSON.parse(options.body).quality;
+            return quality === 'source'
+                ? sourceStatus
+                : new Promise((resolve) => {
+                      pending[quality] = resolve;
+                  });
+        });
+        try {
+            choose(doc, '720p');
+            choose(doc, '480p');
+            pending['480p'](variant('480p'));
+            await tick();
+            pending['720p'](variant('720p'));
+            await tick();
+            assert(doc.getElementById('player').src.endsWith('/assets/480p'));
+        } finally {
+            dom.window.close();
+        }
+    });
+    it('retains the seek position when a second quality is chosen before the first file loads', async () => {
+        const { dom, doc } = await page('recordingDetail.html', '/recordings/meeting', (url, options) => {
+            if (!url.includes('/playback/')) return;
+            const quality = JSON.parse(options.body).quality;
+            return quality === 'source' ? sourceStatus : variant(quality);
+        });
+        try {
+            const player = doc.getElementById('player');
+            Object.defineProperty(player, 'duration', { value: 90 });
+            player.onloadedmetadata();
+            player.currentTime = 21;
+            choose(doc, '720p');
+            await tick();
+            // No loadedmetadata event yet: the browser resets currentTime during loading.
+            player.currentTime = 0;
+            choose(doc, '480p');
+            await tick();
+            player.onloadedmetadata();
+            assert.equal(player.currentTime, 21);
+            assert(player.src.endsWith('/assets/480p'));
+        } finally {
+            dom.window.close();
+        }
+    });
+
+    it('retains the current video on failure, permits public retry and displays unavailable statistics', async () => {
+        let failed = false;
+        const { dom, doc, calls } = await page('recordingShare.html', '/recordings/share/id/secret', (url) => {
+            if (!url.includes('/playback/')) return;
+            if (url.includes('quality=source')) return sourceStatus;
+            if (!url.includes('retry=true')) {
+                failed = true;
+                return { state: 'failed', error: '请重试' };
+            }
+            return variant('720p');
+        });
+        try {
+            choose(doc, '720p');
+            await tick();
+            assert(failed);
+            assert(doc.getElementById('player').src.endsWith('/source-asset'));
+            assert.equal(doc.getElementById('retryQuality').hidden, false);
+            doc.getElementById('retryQuality').click();
+            await tick();
+            assert(doc.getElementById('player').src.endsWith('/720p'));
+            assert(calls.some((c) => c.url.includes('retry=true')));
+            doc.getElementById('toggleDetails').click();
+            assert(doc.getElementById('fileDetails').textContent.includes('1920×1080'));
+            assert(doc.getElementById('playbackStats').textContent.includes('不可用'));
+            doc.getElementById('closeDetails').click();
+            assert.equal(doc.getElementById('videoDetails').hidden, true);
+        } finally {
+            dom.window.close();
+        }
+    });
+    it('remembers desired quality between views while displaying each actual quality', async () => {
+        const other = {
+            ...meeting,
+            views: [...meeting.views, { ...meeting.views[0], id: 'small-view', name: 'Small' }],
+        };
+        const { dom, doc, calls } = await page('recordingDetail.html', '/recordings/meeting', (url, options) => {
+            if (url === '/api/admin/recordings/meeting') return other;
+            if (!url.includes('/playback/')) return;
+            if (url.includes('small-view'))
+                return { ...sourceStatus, assetId: 'small-source', qualities: [sourceStatus.qualities[0]] };
+            const q = JSON.parse(options.body).quality;
+            return q === 'source' ? sourceStatus : variant(q);
+        });
+        try {
+            choose(doc, '720p');
+            await tick();
+            doc.querySelectorAll('.angle-button')[1].click();
+            await tick();
+            assert.equal(doc.getElementById('playbackQuality').value, 'source');
+            doc.querySelectorAll('.angle-button')[0].click();
+            await tick();
+            assert.equal(doc.getElementById('playbackQuality').value, '720p');
+            assert.equal(JSON.parse(calls.filter((c) => c.url.includes('small-view'))[0].options.body).quality, '720p');
+        } finally {
+            dom.window.close();
+        }
+    });
+});

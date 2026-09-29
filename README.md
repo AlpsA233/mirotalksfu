@@ -193,6 +193,8 @@ Recorded meetings default to **recording only** for participants who allow micro
 
 See [record-only audio verification](docs/record-only-audio.md) for setup, behavior and staged acceptance checks.
 
+Cameras now default to the highest resolution available through the browser, with in-meeting quality controls. Recording playback preserves source dimensions and provides on-demand lower qualities, file details and playback statistics. See [capture and playback quality](docs/playback-quality-details.md) for behavior, API details and the bandwidth configuration upgrade.
+
 </details>
 
 <details>
